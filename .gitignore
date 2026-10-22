@@ -16,3 +16,7 @@ data/seed.db
 
 # Windows 快捷方式
 *.lnk
+
+# 本地启动脚本与私人笔记
+读取Seed.cmd
+项目描述.txt
