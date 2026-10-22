@@ -50,3 +50,29 @@ CHJ_MT02  (seed INTEGER PK, skull TEXT, spiral TEXT, triangle TEXT, star TEXT, s
 - 每个 Trial 一张答案表，表名就是日志里的 Trial ID
 - `labels` 存 `{"列名": "中文名"}`，没有映射时界面直接显示英文列名
 - 码值一律 TEXT，保住 `014` 这种前导零；源表缺格存 NULL
+
+## 更新数据（不用发版）
+
+`data/seed.db` 是唯一数据源，改完推上去，用户下次启动就会看到「发现新数据」：
+
+```powershell
+# 1. 本地录入 / 直接改 data/seed.db
+# 2. 提交并推送
+git add data/seed.db
+git commit -m "data: 补充 XXX 关的种子"
+git push origin master
+```
+
+App 启动时拉取 `raw.githubusercontent.com/<repo>/master/data/seed.db`：
+
+- 只补本地没有记录，**不覆盖**已有值；
+- 同 seed 两边不同 → 逐条选择（超过 30 处自动切批量模式）；
+- 远端行数不足本地一半 → 判定为异常，拒绝合并。
+
+## 新增一个关卡
+
+1. 在 `seed_importer.py` 顶部改四个常量：`SHEET_NAME` / `TRIAL_ID` / `NAME_ZH` / `MAP_NAME`
+2. 在 `SYMBOLS` 里按 xlsx 表头顺序写「列名 → 表头」
+3. 跑 `python seed_importer.py`（`labels` 列会自动补上中文名）
+4. 界面的列数、顺序、名称全部从表结构读，不需要改 UI 代码
+

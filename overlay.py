@@ -18,6 +18,7 @@ import sys
 from PyQt6.QtCore import QPoint, QRegularExpression, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
+    QFont,
     QKeySequence,
     QPainter,
     QRegularExpressionValidator,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -63,7 +65,7 @@ QLabel#seed {
 }
 QLabel#trial {
     font-size: 15px;
-    color: #9fd2ff;
+    color: #e9e9ec;
 }
 QLabel#hint {
     font-size: 14px;
@@ -90,6 +92,8 @@ QLineEdit[readOnly="true"] {
     border: none;
     padding: 0;
     font-size: 16px;
+    font-weight: 600;
+    color: #7ebf96;
 }
 QPushButton {
     background: rgba(255, 255, 255, 36);
@@ -98,41 +102,47 @@ QPushButton {
     padding: 5px 14px;
     font-size: 14px;
 }
-QPushButton#refresh {
-    font-size: 13px;
-    padding: 0;
-    background: rgba(255, 255, 255, 28);
+QLabel#slot {
+    font-size: 15px;
+    font-weight: 600;
+    color: #d8dbe2;
 }
-QPushButton#refresh:hover {
-    background: rgba(255, 255, 255, 60);
+QLabel#refresh {
+    font-size: 15px;
+    padding: 1px 10px;
+    color: #e9e9ec;
+    border: 1px solid rgba(255, 255, 255, 48);
+    border-radius: 6px;
 }
-QPushButton#close {
-    font-size: 18px;
-    padding: 0;
-    background: transparent;
+QLabel#refresh:hover {
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 110);
+    background: rgba(255, 255, 255, 24);
+}
+
+QLabel#close {
+    font-size: 17px;
     color: rgba(255, 255, 255, 150);
 }
-QPushButton#close:hover {
+QLabel#close:hover {
     background: rgba(220, 70, 70, 190);
     color: #ffffff;
+    border-radius: 6px;
 }
 QPushButton#refresh {
     font-size: 11px;
     padding: 0;
     background: rgba(255, 255, 255, 28);
 }
-QPushButton#refresh:hover {
-    background: rgba(255, 255, 255, 60);
-}
-QPushButton#close {
-    font-size: 18px;
-    padding: 0;
-    background: transparent;
+
+QLabel#close {
+    font-size: 17px;
     color: rgba(255, 255, 255, 150);
 }
-QPushButton#close:hover {
+QLabel#close:hover {
     background: rgba(220, 70, 70, 190);
     color: #ffffff;
+    border-radius: 6px;
 }
 QPushButton:hover {
     background: rgba(255, 255, 255, 60);
@@ -141,6 +151,24 @@ QPushButton:disabled {
     color: rgba(255, 255, 255, 90);
 }
 """
+
+
+class ClickableLabel(QLabel):
+    """当按钮用的标签：绘制路径和普通文字完全一致，不会出现按钮那种糊字。"""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class UpdateWorker(QThread):
@@ -200,33 +228,38 @@ class Overlay(QWidget):
         top.setSpacing(6)
         self.seed_label = QLabel("Seed: --")
         self.seed_label.setObjectName("seed")
+        self.seed_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        self.refresh_button = QPushButton("刷新")
+        # 关卡名：夹在 Seed 和按钮中间，只显示中文名
+        self.trial_label = QLabel("")
+        self.trial_label.setObjectName("trial")
+        self.trial_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.trial_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.trial_label.setVisible(False)
+
+        self.refresh_button = ClickableLabel("刷新")
         self.refresh_button.setObjectName("refresh")
-        self.refresh_button.setFixedSize(52, 26)
         self.refresh_button.setToolTip("手动刷新（F5）")
         self.refresh_button.clicked.connect(lambda: self.refresh(force=True))
 
-        self.close_button = QPushButton("×")
+        self.close_button = ClickableLabel("×")
         self.close_button.setObjectName("close")
+        self.close_button.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.close_button.setFixedSize(26, 26)
         self.close_button.setToolTip("关闭（Esc）")
         self.close_button.clicked.connect(self.close)
 
         top.addWidget(self.seed_label)
         top.addStretch(1)
+        top.addWidget(self.trial_label)
+        top.addStretch(1)
         top.addWidget(self.refresh_button)
         top.addWidget(self.close_button)
         root.addLayout(top)
 
-        # 关卡名单独一行：名字长短不会挤动右边的按钮
-        self.trial_label = QLabel("")
-        self.trial_label.setObjectName("trial")
-        self.trial_label.setVisible(False)
-        root.addWidget(self.trial_label)
-
         # ---- 中部数据区 ----
         self.body = QWidget(self)
+        self.body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.grid = QGridLayout(self.body)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(10)
@@ -252,13 +285,11 @@ class Overlay(QWidget):
         bar.setContentsMargins(0, 0, 0, 0)
         self.update_label = QLabel("")
         self.update_label.setObjectName("update")
-        self.sync_button = QPushButton("同步")
+        self.sync_button = ClickableLabel("同步")
         self.sync_button.setObjectName("refresh")
-        self.sync_button.setFixedSize(52, 26)
         self.sync_button.clicked.connect(self.apply_update)
-        self.ignore_button = QPushButton("忽略")
+        self.ignore_button = ClickableLabel("忽略")
         self.ignore_button.setObjectName("refresh")
-        self.ignore_button.setFixedSize(52, 26)
         self.ignore_button.clicked.connect(self.dismiss_update)
         bar.addWidget(self.update_label)
         bar.addStretch(1)
@@ -348,8 +379,7 @@ class Overlay(QWidget):
             self._fit()
             return
 
-        title = " ".join(part for part in (info["name_zh"], info["trial_id"]) if part)
-        self._set_trial_text(title)
+        self._set_trial_text(info["name_zh"] or info["trial_id"])
 
         codes = read_codes(seed, trial_id=trial)
         if codes is None:
@@ -385,29 +415,51 @@ class Overlay(QWidget):
         values: dict[str, str | None],
         readonly: bool = False,
     ) -> None:
+        """每个图案一个小格：名字在上、数字在下，横向排布。
+
+        以前是"名字贴左、数字贴右"两列布局，420px 宽度里中间空一大截，
+        眼睛要来回扫；竖排之后名字和数字天然对齐。
+        """
         self._inputs = {}
-        for row, (name, label) in enumerate(info["slots"]):
+        slots = info["slots"]
+        per_row = 5  # 一行最多 5 个，超过就换行（比如以后某关有 7 个图案）
+
+        for index, (name, label) in enumerate(slots):
+            tile = QWidget()
+            tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            column = QVBoxLayout(tile)
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(2)
+
             caption = QLabel(label)
+            caption.setObjectName("slot")
+            caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
             field = QLineEdit()
             field.setMaxLength(3)
-            field.setFixedWidth(110)
+            field.setFixedWidth(64)
             field.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if readonly:
                 field.setReadOnly(True)
                 field.setProperty("readOnly", "true")
-                field.setFixedWidth(80)
-                field.setAlignment(Qt.AlignmentFlag.AlignRight)
                 field.setText(values.get(name) or "—")
             else:
                 field.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,3}")))
                 field.setPlaceholderText("---")
                 self._inputs[name] = field
 
-            self.grid.addWidget(caption, row, 0)
-            self.grid.addWidget(field, row, 1)
+            column.addWidget(caption)
+            column.addWidget(field, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        self.grid.setColumnStretch(0, 1)
+            self.grid.addWidget(
+                tile, index // per_row, index % per_row, Qt.AlignmentFlag.AlignHCenter
+            )
+
+        # 各列等宽平分，避免所有小格挤在左边
+        for column_index in range(min(per_row, len(slots))):
+            self.grid.setColumnStretch(column_index, 1)
+        self.grid.setHorizontalSpacing(2)
 
     def _set_editing(self, editing: bool) -> None:
         self._editing = editing
@@ -454,7 +506,7 @@ class Overlay(QWidget):
             self.sync_button.setText("完成")
             self.ignore_button.setVisible(False)
             self._pending_report = None
-            QTimer.singleShot(4000, self.update_bar.hide)
+            QTimer.singleShot(4000, self._auto_hide_update)
             self.refresh(force=True)
 
         self.update_bar.setVisible(True)
@@ -467,6 +519,11 @@ class Overlay(QWidget):
             self._fit()
             return
         self.show_conflicts(report.conflicts)
+
+    def _auto_hide_update(self) -> None:
+        """提示停留几秒后收起，并重新按内容收缩窗口，避免底部留白。"""
+        self.update_bar.setVisible(False)
+        self._fit()
 
     def dismiss_update(self) -> None:
         self.update_bar.setVisible(False)
