@@ -28,7 +28,7 @@ from log_parser import normalize_trial_id, read_current_seed, read_current_state
 
 logger = logging.getLogger(__name__)
 
-from app_paths import DB_PATH
+from app_paths import DB_PATH, enable_utf8_stdout
 
 # 表名会拼进 SQL，所以必须白名单：只允许 CHJ_MT02 这种形态
 TABLE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -271,6 +271,7 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="以 JSON 输出")
     args = parser.parse_args()
 
+    enable_utf8_stdout()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stderr)
 
     # 只要有一项是手动给的，就仍需读一次日志补齐另一项

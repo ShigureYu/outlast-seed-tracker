@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app_paths import enable_utf8_stdout
 from log_parser import (
     extract_seed_from_log,
     extract_trial_id_from_log,
@@ -439,6 +440,7 @@ def _selftest() -> int:
 
 
 def main() -> None:
+    enable_utf8_stdout()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())

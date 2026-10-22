@@ -11,6 +11,10 @@ permissions:
 jobs:
   windows-exe:
     runs-on: windows-latest
+    env:
+      # runner 默认 cp1252，脚本里有中文输出，统一成 UTF-8
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
 

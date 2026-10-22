@@ -21,3 +21,16 @@ APP_DIR = _app_dir()
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "seed.db"
 XLSX_PATH = DATA_DIR / "seed.xlsx"
+
+
+def enable_utf8_stdout() -> None:
+    """让 print 中文在 Windows 控制台不再崩。
+
+    cmd.exe 和 CI runner 的默认代码页是 cp936 / cp1252，直接 print 中文会
+    UnicodeEncodeError；这里统一改成 UTF-8，编不出来的字符用替代符而不是抛异常。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # 被重定向到不支持 reconfigure 的对象
+            pass

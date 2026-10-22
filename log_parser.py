@@ -14,6 +14,8 @@ import os
 import re
 from pathlib import Path
 
+from app_paths import enable_utf8_stdout
+
 logger = logging.getLogger(__name__)
 
 LOG_DIR = Path("OPP") / "Saved" / "Logs"
@@ -197,6 +199,7 @@ def read_current_state() -> tuple[str | None, str | None]:
 
 
 def main() -> None:
+    enable_utf8_stdout()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     log_file = find_latest_log()

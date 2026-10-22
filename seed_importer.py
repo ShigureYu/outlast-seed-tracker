@@ -22,7 +22,7 @@ import openpyxl
 
 logger = logging.getLogger(__name__)
 
-from app_paths import DB_PATH, XLSX_PATH
+from app_paths import DB_PATH, XLSX_PATH, enable_utf8_stdout
 
 # --- 当前硬编码的一关：被告判决 / 法院 ---
 SHEET_NAME = "被告判决"
@@ -180,6 +180,7 @@ def import_all() -> None:
 
 
 def main() -> None:
+    enable_utf8_stdout()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     import_all()
 
