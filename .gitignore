@@ -12,7 +12,11 @@ wheels/
 # 本地运行产物
 tmp/
 selftest.txt
-data/seed.db
+data/update_state.json
+data/*.remote
+
+# Excel 是本地维护用的原始表，仓库以 seed.db 为准
+data/seed.xlsx
 
 # 发布产物（由 CI 生成，不进仓库）
 release/

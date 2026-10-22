@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PyQt6.QtCore import QPoint, QRegularExpression, Qt, QTimer
+from PyQt6.QtCore import QPoint, QRegularExpression, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QKeySequence,
@@ -34,7 +34,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app_paths import enable_utf8_stdout, ensure_database
+import updater
+from app_paths import DB_PATH, enable_utf8_stdout, ensure_database
 from log_parser import (
     extract_seed_from_log,
     extract_trial_id_from_log,
@@ -66,6 +67,10 @@ QLabel#trial {
 QLabel#hint {
     font-size: 14px;
     color: #ff8a80;
+}
+QLabel#update {
+    font-size: 13px;
+    color: #8fe3a0;
 }
 QLineEdit {
     background: rgba(255, 255, 255, 26);
@@ -131,6 +136,30 @@ QPushButton:disabled {
     color: rgba(255, 255, 255, 90);
 }
 """
+
+
+class UpdateWorker(QThread):
+    """后台检查更新：下载并合并，完成后通过信号把结果交回主线程。"""
+
+    done = pyqtSignal(object)
+
+    def __init__(self, db_path, parent=None) -> None:
+        super().__init__(parent)
+        self._db_path = db_path
+
+    def run(self) -> None:
+        try:
+            remote = updater.fetch_remote(self._db_path)
+            if remote is None:
+                self.done.emit(None)
+                return
+            report = updater.merge(remote, self._db_path)
+            remote.unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001 - 同步失败不该拖垮界面
+            logger.warning("同步失败: %s", exc)
+            self.done.emit(None)
+            return
+        self.done.emit(report)
 
 
 class Overlay(QWidget):
@@ -212,6 +241,39 @@ class Overlay(QWidget):
         self.footer.setLayout(footer)
         root.addWidget(self.footer)
 
+        # ---- 数据同步提示（默认隐藏，不占高度）----
+        self.update_bar = QWidget(self)
+        bar = QHBoxLayout(self.update_bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        self.update_label = QLabel("")
+        self.update_label.setObjectName("update")
+        self.sync_button = QPushButton("同步")
+        self.sync_button.setObjectName("refresh")
+        self.sync_button.setFixedSize(52, 26)
+        self.sync_button.clicked.connect(self.apply_update)
+        self.ignore_button = QPushButton("忽略")
+        self.ignore_button.setObjectName("refresh")
+        self.ignore_button.setFixedSize(52, 26)
+        self.ignore_button.clicked.connect(self.dismiss_update)
+        bar.addWidget(self.update_label)
+        bar.addStretch(1)
+        bar.addWidget(self.sync_button)
+        bar.addWidget(self.ignore_button)
+        self.update_bar.setVisible(False)
+        root.addWidget(self.update_bar)
+
+        # ---- 冲突面板（非模态，默认隐藏）----
+        self.conflict_box = QWidget(self)
+        self.conflict_layout = QVBoxLayout(self.conflict_box)
+        self.conflict_layout.setContentsMargins(0, 0, 0, 0)
+        self.conflict_layout.setSpacing(4)
+        self.conflict_box.setVisible(False)
+        root.addWidget(self.conflict_box)
+
+        self._conflicts: list = []
+        self._choices: dict = {}
+        self._worker = None
+
         self.shortcut = QShortcut(QKeySequence("F5"), self)
         self.shortcut.activated.connect(lambda: self.refresh(force=True))
         self.quit_shortcut = QShortcut(QKeySequence("Esc"), self)
@@ -221,6 +283,9 @@ class Overlay(QWidget):
         self._timer.setInterval(POLL_MS)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
+
+        # 启动 1.5 秒后后台检查一次更新，不阻塞界面
+        QTimer.singleShot(1500, self.check_updates)
 
     # ---------- 日志 ----------
     @staticmethod
@@ -338,6 +403,106 @@ class Overlay(QWidget):
 
     def _fit(self) -> None:
         self.adjustSize()
+
+    # ---------- 数据同步 ----------
+    def check_updates(self) -> None:
+        """启动时后台检查一次；没有任何网络或解析失败会打扰用户。"""
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self._worker = UpdateWorker(DB_PATH, self)
+        self._worker.done.connect(self.on_update_checked)
+        self._worker.start()
+
+    def on_update_checked(self, report) -> None:
+        self._worker = None
+        if report is None:
+            return  # 没变化或失败：界面完全不动
+
+        if report.conflicts:
+            self.update_label.setText(f"有 {len(report.conflicts)} 处数据不一致")
+            self.sync_button.setText("处理")
+            self.ignore_button.setVisible(True)
+            self._pending_report = report
+        else:
+            self.update_label.setText(f"已同步 {report.inserted} 条新记录")
+            self.sync_button.setText("完成")
+            self.ignore_button.setVisible(False)
+            self._pending_report = None
+            QTimer.singleShot(4000, self.update_bar.hide)
+            self.refresh(force=True)
+
+        self.update_bar.setVisible(True)
+        self._fit()
+
+    def apply_update(self) -> None:
+        report = getattr(self, "_pending_report", None)
+        if report is None:
+            self.update_bar.setVisible(False)
+            self._fit()
+            return
+        self.show_conflicts(report.conflicts)
+
+    def dismiss_update(self) -> None:
+        self.update_bar.setVisible(False)
+        self._pending_report = None
+        self._fit()
+
+    def show_conflicts(self, conflicts) -> None:
+        self._conflicts = conflicts
+        self._choices = {c.key: True for c in conflicts}  # 默认全部用远端
+
+        while self.conflict_layout.count():
+            item = self.conflict_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        title = QLabel(f"以下 {len(conflicts)} 处本地与远端不同，勾选表示改用远端：")
+        title.setObjectName("update")
+        self.conflict_layout.addWidget(title)
+
+        for conflict in conflicts:
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            text = QLabel(
+                f"{conflict.seed} {conflict.slot}  {conflict.local or '—'} → {conflict.remote or '—'}"
+            )
+            choice = QPushButton("用远端")
+            choice.setObjectName("refresh")
+            choice.setCheckable(True)
+            choice.setChecked(True)
+            choice.setFixedSize(64, 24)
+            choice.toggled.connect(
+                lambda checked, key=conflict.key: self._choices.__setitem__(key, checked)
+            )
+            line.addWidget(text)
+            line.addStretch(1)
+            line.addWidget(choice)
+            self.conflict_layout.addWidget(row)
+
+        apply_button = QPushButton("应用")
+        apply_button.clicked.connect(self.apply_conflicts)
+        self.conflict_layout.addWidget(apply_button)
+
+        self.update_bar.setVisible(False)
+        self.conflict_box.setVisible(True)
+        self._fit()
+
+    def apply_conflicts(self) -> None:
+        if not self._conflicts:
+            return
+        changed = updater.apply_conflicts(DB_PATH, self._conflicts, self._choices)
+        self._conflicts = []
+        self._pending_report = None
+        self.conflict_box.setVisible(False)
+        self.update_label.setText(f"已同步 {changed} 处")
+        self.sync_button.setText("完成")
+        self.ignore_button.setVisible(False)
+        self.update_bar.setVisible(True)
+        self.refresh(force=True)
+        self._fit()
 
     # ---------- 保存 ----------
     def save(self) -> None:

@@ -25,13 +25,16 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyqt6 openpyxl pyinstaller
+          python -m pip install pyqt6 pyinstaller
 
-      - name: Build database from xlsx
-        run: python seed_importer.py
+      - name: Verify bundled database
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'data\seed.db')) { throw "仓库里缺少 data/seed.db" }
+          python -c "import sqlite3;c=sqlite3.connect('data/seed.db');print('答案行数:', c.execute('SELECT COUNT(*) FROM CHJ_MT02').fetchone()[0]);c.close()"
 
       - name: Build exe
-        # 把模板库一并塞进 exe：首次运行时自动释放到 exe 旁边，
+        # data/seed.db 一并塞进 exe：首次运行时自动释放到 exe 旁边，
         # 所以用户在 Release 里下载单个 exe 就能直接跑。
         run: python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay --add-data "data/seed.db;data" overlay.py
 
@@ -70,5 +73,11 @@ jobs:
             2. 双击运行。首次启动会在**同目录**下生成 `data/seed.db`，
                之后你的录入都保存在这个文件里，覆盖 exe 升级不会丢数据。
             3. 悬浮窗出现在屏幕正上方居中，可拖拽；`F5` 手动刷新，`Esc` 关闭，双击折叠。
+
+            ## 数据更新
+
+            启动后会自动检查仓库里的 `data/seed.db` 是否有更新：
+            - 只补新记录，**不会覆盖**你本地已有的值；
+            - 同一 seed 两边不同时，会让你逐条选择用哪个。
 
             游戏需使用**无边框窗口**模式，独占全屏下悬浮窗可能不显示。

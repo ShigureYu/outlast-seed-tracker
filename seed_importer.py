@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import openpyxl
@@ -153,7 +154,7 @@ def import_all() -> None:
     if duplicated:
         logger.warning("有 %d 个 seed 重复: %s", len(duplicated), duplicated[:10])
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
         create_schema(conn)
         conn.execute(
             f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels) "

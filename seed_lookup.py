@@ -22,6 +22,7 @@ import logging
 import re
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 from log_parser import normalize_trial_id, read_current_seed, read_current_state, read_current_trial_id
@@ -115,7 +116,7 @@ def lookup(
         raise ValueError("没能确定 Trial ID：日志里没读到，也没显式传入")
 
     seed_value = int(str(seed).strip())
-    with _connect(db_path) as conn:
+    with closing(_connect(db_path)) as conn:
         _check_trial(conn, trial)
         return _query_codes(conn, trial, seed_value)
 
@@ -165,7 +166,7 @@ def describe_trial(
     if trial is None:
         return None
 
-    with _connect(db_path) as conn:
+    with closing(_connect(db_path)) as conn:
         try:
             _check_trial(conn, trial)
         except ValueError:
@@ -196,7 +197,7 @@ def read_codes(
     if trial is None:
         return None
 
-    with _connect(db_path) as conn:
+    with closing(_connect(db_path)) as conn:
         try:
             _check_trial(conn, trial)
         except ValueError:
@@ -221,7 +222,7 @@ def save_codes(
 
     seed_value = int(str(seed).strip())
 
-    with _connect(db_path) as conn:
+    with closing(_connect(db_path)) as conn:
         _check_trial(conn, trial)
         columns = get_symbols(conn, trial)
 
@@ -288,7 +289,7 @@ def main() -> None:
     if not seed:
         raise SystemExit("没有可用的 seed：日志里没找到，也没用 --seed 指定")
 
-    with _connect(args.db) as conn:
+    with closing(_connect(args.db)) as conn:
         try:
             _check_trial(conn, trial_id)
         except ValueError as exc:
