@@ -31,26 +31,44 @@ jobs:
         run: python seed_importer.py
 
       - name: Build exe
-        run: python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay overlay.py
+        # 把模板库一并塞进 exe：首次运行时自动释放到 exe 旁边，
+        # 所以用户在 Release 里下载单个 exe 就能直接跑。
+        run: python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay --add-data "data/seed.db;data" overlay.py
 
-      - name: Assemble release folder
+      - name: Smoke test
         shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          New-Item -ItemType Directory -Force -Path release\data | Out-Null
-          Copy-Item dist\OPPOverlay.exe release\
-          Copy-Item data\seed.db release\data\
-          Copy-Item README.md release\
-          Compress-Archive -Path release\* -DestinationPath OPPOverlay.zip
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          Copy-Item dist\OPPOverlay.exe smoke\
+          $env:TEMP = (Resolve-Path smoke).Path
+          $env:TMP = $env:TEMP
+          $p = Start-Process -FilePath smoke\OPPOverlay.exe -ArgumentList '--selftest' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "exe 自检失败，退出码 $($p.ExitCode)" }
+          Get-Content smoke\selftest.txt
+          if (-not (Select-String -Path smoke\selftest.txt -Pattern 'db_exists: True' -Quiet)) {
+            throw "自检未找到内置数据库"
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OPPOverlay
-          path: OPPOverlay.zip
+          path: dist/OPPOverlay.exe
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: OPPOverlay.zip
+          files: dist/OPPOverlay.exe
           generate_release_notes: true
+          body: |
+            ## 用法
+
+            1. 下载 `OPPOverlay.exe`，放到一个你能找到的文件夹（不要放临时目录）。
+            2. 双击运行。首次启动会在**同目录**下生成 `data/seed.db`，
+               之后你的录入都保存在这个文件里，覆盖 exe 升级不会丢数据。
+            3. 悬浮窗出现在屏幕正上方居中，可拖拽；`F5` 手动刷新，`Esc` 关闭，双击折叠。
+
+            游戏需使用**无边框窗口**模式，独占全屏下悬浮窗可能不显示。

@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app_paths import enable_utf8_stdout
+from app_paths import enable_utf8_stdout, ensure_database
 from log_parser import (
     extract_seed_from_log,
     extract_trial_id_from_log,
@@ -441,6 +441,8 @@ def _selftest() -> int:
 
 def main() -> None:
     enable_utf8_stdout()
+    if not ensure_database():
+        raise SystemExit("缺少 data/seed.db，且包内没有模板库")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())

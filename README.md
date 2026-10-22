@@ -32,11 +32,13 @@ python overlay.py
 ## 打包
 
 ```powershell
-python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay overlay.py
+python seed_importer.py
+python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay --add-data "data/seed.db;data" overlay.py
 ```
 
-产物在 `dist/OPPOverlay.exe`。**exe 旁边必须保留 `data/seed.db`**（数据库不打包进 exe，
-否则用户录入的记录会随 onefile 临时目录一起消失）。
+产物是**单个** `dist/OPPOverlay.exe`。模板数据库会被打进 exe，首次运行时由
+`app_paths.ensure_database()` 复制到 exe 同级的 `data/seed.db`——之后的录入写这份副本，
+所以升级 exe 只需要覆盖 exe 本身，数据不会丢。
 
 ## 数据库
 

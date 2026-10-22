@@ -5,7 +5,7 @@ a = Analysis(
     ['overlay.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('data/seed.db', 'data')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

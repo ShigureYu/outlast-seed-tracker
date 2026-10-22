@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -17,10 +18,32 @@ def _app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _bundle_dir() -> Path:
+    """打包后是 onefile 的解包目录；源码运行时就是本目录。"""
+    return Path(getattr(sys, "_MEIPASS", _app_dir()))
+
+
 APP_DIR = _app_dir()
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "seed.db"
 XLSX_PATH = DATA_DIR / "seed.xlsx"
+BUNDLED_DB = _bundle_dir() / "data" / "seed.db"
+
+
+def ensure_database() -> bool:
+    """保证 exe 旁边有可用的 seed.db，返回数据库是否可用。
+
+    单文件 exe 里带了一份模板库；首次运行时复制到 exe 同级目录，
+    之后的录入都写这份副本（不会因为重新下载 exe 而丢失）。
+    源码运行时 DB_PATH 和 BUNDLED_DB 是同一个文件，直接判断存在即可。
+    """
+    if DB_PATH.is_file():
+        return True
+    if not BUNDLED_DB.is_file() or BUNDLED_DB == DB_PATH:
+        return False
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(BUNDLED_DB, DB_PATH)
+    return True
 
 
 def enable_utf8_stdout() -> None:
