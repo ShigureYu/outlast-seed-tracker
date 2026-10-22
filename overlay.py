@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -71,6 +72,10 @@ QLabel#hint {
 QLabel#update {
     font-size: 13px;
     color: #8fe3a0;
+}
+QScrollArea, QScrollArea > QWidget > QWidget {
+    background: transparent;
+    border: none;
 }
 QLineEdit {
     background: rgba(255, 255, 255, 26);
@@ -262,11 +267,22 @@ class Overlay(QWidget):
         self.update_bar.setVisible(False)
         root.addWidget(self.update_bar)
 
-        # ---- 冲突面板（非模态，默认隐藏）----
+        # ---- 冲突面板（非模态、限高可滚动，默认隐藏）----
         self.conflict_box = QWidget(self)
-        self.conflict_layout = QVBoxLayout(self.conflict_box)
+        box = QVBoxLayout(self.conflict_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        self.conflict_scroll = QScrollArea(self.conflict_box)
+        self.conflict_scroll.setWidgetResizable(True)
+        self.conflict_scroll.setMaximumHeight(260)
+        self.conflict_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        inner = QWidget()
+        self.conflict_layout = QVBoxLayout(inner)
         self.conflict_layout.setContentsMargins(0, 0, 0, 0)
         self.conflict_layout.setSpacing(4)
+        self.conflict_scroll.setWidget(inner)
+        box.addWidget(self.conflict_scroll)
         self.conflict_box.setVisible(False)
         root.addWidget(self.conflict_box)
 
@@ -418,6 +434,16 @@ class Overlay(QWidget):
         if report is None:
             return  # 没变化或失败：界面完全不动
 
+        if report.refused:
+            # 远端数据异常：只提示，不给合并入口
+            self.update_label.setText(f"远端数据异常，已跳过（{report.reason}）")
+            self.sync_button.setVisible(False)
+            self.ignore_button.setText("知道了")
+            self.update_bar.setVisible(True)
+            self._pending_report = None
+            self._fit()
+            return
+
         if report.conflicts:
             self.update_label.setText(f"有 {len(report.conflicts)} 处数据不一致")
             self.sync_button.setText("处理")
@@ -444,13 +470,15 @@ class Overlay(QWidget):
 
     def dismiss_update(self) -> None:
         self.update_bar.setVisible(False)
+        self.sync_button.setVisible(True)
+        self.ignore_button.setText("忽略")
         self._pending_report = None
         self._fit()
 
-    def show_conflicts(self, conflicts) -> None:
-        self._conflicts = conflicts
-        self._choices = {c.key: True for c in conflicts}  # 默认全部用远端
+    CONFLICT_PAGE = 10
+    CONFLICT_BULK_THRESHOLD = 30
 
+    def _clear_conflict_box(self) -> None:
         while self.conflict_layout.count():
             item = self.conflict_layout.takeAt(0)
             widget = item.widget()
@@ -458,37 +486,119 @@ class Overlay(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
 
-        title = QLabel(f"以下 {len(conflicts)} 处本地与远端不同，勾选表示改用远端：")
+    def show_conflicts(self, conflicts) -> None:
+        self._conflicts = list(conflicts)
+        self._choices = {c.key: True for c in conflicts}  # 默认全部用远端
+        self._page = 0
+
+        # 按 seed 聚合：同一 seed 的多个字段合成一行，行数先除以槽位数
+        groups: dict[tuple[str, int], list] = {}
+        for conflict in conflicts:
+            groups.setdefault((conflict.trial_id, conflict.seed), []).append(conflict)
+        self._groups = sorted(groups.items(), key=lambda kv: kv[0][1])
+
+        self._clear_conflict_box()
+        self.update_bar.setVisible(False)
+        self.conflict_box.setVisible(True)
+
+        if len(conflicts) > self.CONFLICT_BULK_THRESHOLD:
+            self._render_bulk()
+        else:
+            self._render_page()
+        self._fit()
+
+    def _render_bulk(self) -> None:
+        """冲突太多时逐条选没有意义，改成整批决定。"""
+        title = QLabel(
+            f"检测到 {len(self._conflicts)} 处不一致（{len(self._groups)} 个种子），"
+            f"可能不是同一份数据源。\n整批切换，或先保留本地再手工核对。"
+        )
+        title.setWordWrap(True)
         title.setObjectName("update")
         self.conflict_layout.addWidget(title)
 
-        for conflict in conflicts:
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        use_remote = QPushButton("全部用远端")
+        use_remote.clicked.connect(lambda: self._bulk_apply(True))
+        keep_local = QPushButton("全部保留本地")
+        keep_local.clicked.connect(lambda: self._bulk_apply(False))
+        line.addWidget(use_remote)
+        line.addWidget(keep_local)
+        line.addStretch(1)
+        self.conflict_layout.addWidget(row)
+
+        self.conflict_scroll.setMaximumHeight(120)
+
+    def _render_page(self) -> None:
+        total_pages = max(1, -(-len(self._groups) // self.CONFLICT_PAGE))
+        start = self._page * self.CONFLICT_PAGE
+        page = self._groups[start : start + self.CONFLICT_PAGE]
+
+        title = QLabel(
+            f"{len(self._conflicts)} 处不一致 / {len(self._groups)} 个种子"
+            f"   第 {self._page + 1}/{total_pages} 页"
+        )
+        title.setObjectName("update")
+        self.conflict_layout.addWidget(title)
+
+        for (_trial, seed), items in page:
+            summary = ", ".join(
+                f"{c.slot} {c.local or '—'}→{c.remote or '—'}" for c in items[:2]
+            )
+            if len(items) > 2:
+                summary += f" 等 {len(items)} 项"
+
             row = QWidget()
             line = QHBoxLayout(row)
             line.setContentsMargins(0, 0, 0, 0)
-            text = QLabel(
-                f"{conflict.seed} {conflict.slot}  {conflict.local or '—'} → {conflict.remote or '—'}"
-            )
+            text = QLabel(f"{seed}   {summary}")
             choice = QPushButton("用远端")
             choice.setObjectName("refresh")
             choice.setCheckable(True)
-            choice.setChecked(True)
+            choice.setChecked(self._choices.get(items[0].key, True))
             choice.setFixedSize(64, 24)
             choice.toggled.connect(
-                lambda checked, key=conflict.key: self._choices.__setitem__(key, checked)
+                lambda checked, group=items: self._set_group(group, checked)
             )
             line.addWidget(text)
             line.addStretch(1)
             line.addWidget(choice)
             self.conflict_layout.addWidget(row)
 
+        nav = QWidget()
+        nav_line = QHBoxLayout(nav)
+        nav_line.setContentsMargins(0, 0, 0, 0)
+        prev_button = QPushButton("上一页")
+        prev_button.setEnabled(self._page > 0)
+        prev_button.clicked.connect(lambda: self._turn_page(-1))
+        next_button = QPushButton("下一页")
+        next_button.setEnabled(self._page + 1 < total_pages)
+        next_button.clicked.connect(lambda: self._turn_page(1))
         apply_button = QPushButton("应用")
         apply_button.clicked.connect(self.apply_conflicts)
-        self.conflict_layout.addWidget(apply_button)
+        nav_line.addWidget(prev_button)
+        nav_line.addWidget(next_button)
+        nav_line.addStretch(1)
+        nav_line.addWidget(apply_button)
+        self.conflict_layout.addWidget(nav)
 
-        self.update_bar.setVisible(False)
-        self.conflict_box.setVisible(True)
+        self.conflict_scroll.setMaximumHeight(260)
+
+    def _set_group(self, items, checked: bool) -> None:
+        for conflict in items:
+            self._choices[conflict.key] = checked
+
+    def _turn_page(self, delta: int) -> None:
+        self._page = max(0, self._page + delta)
+        self._clear_conflict_box()
+        self._render_page()
         self._fit()
+
+    def _bulk_apply(self, use_remote: bool) -> None:
+        self._choices = {c.key: use_remote for c in self._conflicts}
+        self.apply_conflicts()
 
     def apply_conflicts(self) -> None:
         if not self._conflicts:

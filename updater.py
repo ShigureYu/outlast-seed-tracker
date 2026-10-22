@@ -48,6 +48,8 @@ class MergeReport:
     skipped: int = 0
     conflicts: list[Conflict] = field(default_factory=list)
     new_trials: list[str] = field(default_factory=list)
+    refused: bool = False
+    reason: str = ""
 
 
 def _state_path(db_path: Path) -> Path:
@@ -125,6 +127,22 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
     ) as local:
         remote.row_factory = sqlite3.Row
         local.row_factory = sqlite3.Row
+
+        # 安全阀：远端表明显比本地小，通常是远端被截断/误删，不能合并
+        for table in _tables(remote):
+            if not local.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone():
+                continue
+            remote_count = remote.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            local_count = local.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if local_count > 20 and remote_count < local_count * 0.5:
+                report.refused = True
+                report.reason = (
+                    f"{table} 远端只有 {remote_count} 行，本地有 {local_count} 行"
+                )
+                logger.warning("拒绝合并：%s", report.reason)
+                return report
 
         # 1) 关卡元信息：缺的补上
         remote_meta = remote.execute(f"SELECT * FROM {META_TABLE}").fetchall()
