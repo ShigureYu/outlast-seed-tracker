@@ -1,0 +1,15 @@
+[project]
+name = "outlast-seed-tracker"
+version = "0.1.0"
+description = "从游戏日志读取 Trial ID / Seed，并在悬浮窗里显示对应密码"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyqt6>=6.11",
+    "openpyxl>=3.1",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22",
+]
