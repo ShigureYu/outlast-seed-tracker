@@ -14,6 +14,11 @@ tmp/
 selftest.txt
 data/seed.db
 
+# 发布产物（由 CI 生成，不进仓库）
+release/
+OPPOverlay.zip
+*.exe
+
 # Windows 快捷方式
 *.lnk
 
