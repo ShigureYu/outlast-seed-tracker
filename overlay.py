@@ -663,6 +663,27 @@ class Overlay(QWidget):
         area = screen.availableGeometry()
         self.move(area.center().x() - self.width() // 2, area.top() + 12)
 
+    def closeEvent(self, event) -> None:
+        """点 × 或按 Esc 时必须真的退出进程，而不是只隐藏窗口。
+
+        Tool 窗口不会被 Qt 当作"最后一个主窗口"，光 close() 不会触发退出；
+        再加上后台可能还有检查更新的线程卡在网络请求上，进程会一直活着。
+        """
+        self._timer.stop()
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.quit()
+            if not worker.wait(1500):
+                logger.warning("更新线程未按时结束，强制终止")
+                worker.terminate()
+                worker.wait(500)
+        self._worker = None
+
+        super().closeEvent(event)
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -723,10 +744,22 @@ def main() -> None:
         raise SystemExit(_selftest())
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
     window = Overlay()
     window.show()
     window.refresh(force=True)
-    sys.exit(app.exec())
+
+    # 调试用：--autoclose <毫秒> 让窗口自己关掉，便于验证打包后的退出行为
+    for index, arg in enumerate(sys.argv):
+        if arg == "--autoclose" and index + 1 < len(sys.argv):
+            try:
+                QTimer.singleShot(int(sys.argv[index + 1]), window.close)
+            except ValueError:
+                pass
+
+    code = app.exec()
+    window.deleteLater()
+    sys.exit(code)
 
 
 if __name__ == "__main__":
