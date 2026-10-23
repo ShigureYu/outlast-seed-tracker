@@ -13,6 +13,7 @@ wheels/
 tmp/
 selftest.txt
 data/update_state.json
+data/conflicts.txt
 data/*.remote
 
 # Excel 是本地维护用的原始表，仓库以 seed.db 为准
