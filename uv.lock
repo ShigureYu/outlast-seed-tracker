@@ -46,7 +46,7 @@ wheels = [
 
 [[package]]
 name = "outlast-seed-tracker"
-version = "0.2.4"
+version = "0.2.5"
 source = { virtual = "." }
 dependencies = [
     { name = "openpyxl" },
@@ -185,7 +185,7 @@ wheels = [
 
 [[package]]
 name = "pywin32-ctypes"
-version = "0.2.4"
+version = "0.2.5"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/85/9f/01a1a99704853cb63f253eea009390c88e7131c67e66a0a02099a8c917cb/pywin32-ctypes-0.2.3.tar.gz", hash = "sha256:d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755", size = 29471, upload-time = "2024-08-14T10:15:34.626Z" }
 wheels = [
