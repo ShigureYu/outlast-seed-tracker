@@ -1,18 +1,23 @@
 @echo off
-rem 双击启动悬浮窗（用 pythonw 避免弹出命令行窗口）
-cd /d "%~dp0"
+rem Launch the overlay without a console window (pythonw = no black box).
+rem pushd is used instead of "cd /d %~dp0": %~dp0 ends with a backslash,
+rem which makes cmd mis-parse the closing quote and breaks the path.
+setlocal
+pushd "%~dp0"
 
 if exist ".venv\Scripts\pythonw.exe" (
     start "" ".venv\Scripts\pythonw.exe" overlay.py
+    popd
     exit /b 0
 )
 
 where py >nul 2>nul
 if %errorlevel%==0 (
     start "" py -3 overlay.py
+    popd
     exit /b 0
 )
 
-echo 找不到 Python 环境：.venv\Scripts\pythonw.exe 不存在。
-echo 请先在本目录执行：uv sync
+popd
+echo [ERROR] .venv not found. Run "uv sync" in this folder first.
 pause
