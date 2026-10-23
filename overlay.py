@@ -343,6 +343,7 @@ class Overlay(QWidget):
         root.addWidget(self.conflict_box)
 
         self._conflicts: list = []
+        self._pending_sig: str | None = None
         self._choices: dict = {}
         self._worker = None
 
@@ -544,7 +545,16 @@ class Overlay(QWidget):
             self._fit()
             return
 
-        if report.conflicts:
+        changed = report.inserted or report.meta_updated
+        signature = updater.conflict_signature(report.conflicts) if report.conflicts else None
+        already_seen = signature is not None and signature == updater.acked_conflicts(DB_PATH)
+
+        if not changed and (not report.conflicts or already_seen):
+            # 例行检查无事发生：一个像素都不打扰
+            return
+
+        if report.conflicts and not already_seen:
+            self._pending_sig = signature
             self.update_label.setText(f"有 {len(report.conflicts)} 处数据不一致")
             self.sync_button.setText("处理")
             self.ignore_button.setVisible(True)
@@ -579,6 +589,10 @@ class Overlay(QWidget):
         self._fit()
 
     def dismiss_update(self) -> None:
+        signature = getattr(self, "_pending_sig", None)
+        if signature:
+            updater.ack_conflicts(DB_PATH, signature)
+            self._pending_sig = None
         self.update_bar.setVisible(False)
         self.sync_button.setVisible(True)
         self.ignore_button.setText("忽略")
@@ -713,6 +727,9 @@ class Overlay(QWidget):
     def apply_conflicts(self) -> None:
         if not self._conflicts:
             return
+        signature = getattr(self, "_pending_sig", None) or updater.conflict_signature(self._conflicts)
+        updater.ack_conflicts(DB_PATH, signature)
+        self._pending_sig = None
         changed = updater.apply_conflicts(DB_PATH, self._conflicts, self._choices)
         self._conflicts = []
         self._pending_report = None

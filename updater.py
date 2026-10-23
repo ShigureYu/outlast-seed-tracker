@@ -86,11 +86,9 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
 def fetch_remote(db_path: Path, url: str = REMOTE_DB_URL) -> Path | None:
     """下载远端库到临时文件；远端没变化（304）时返回 None。"""
     state = _read_state(db_path)
-    headers = {"User-Agent": "OPPOverlay"}
-    if state.get("etag"):
-        headers["If-None-Match"] = state["etag"]
-
-    request = urllib.request.Request(url, headers=headers)
+    # 库只有几十 KB，每次启动都完整拉一次：本地误删能自动补回，
+    # 也不用维护 ETag 那套“为什么没反应”的状态。
+    request = urllib.request.Request(url, headers={"User-Agent": "OPPOverlay"})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             payload = response.read()
@@ -271,3 +269,21 @@ def apply_conflicts(
             changed += 1
         local.commit()
     return changed
+
+
+def conflict_signature(conflicts: list[Conflict]) -> str:
+    """给一批冲突算个指纹，用来记住“这批我看过了”。"""
+    raw = "|".join(
+        sorted(f"{c.trial_id}:{c.seed}:{c.slot}:{c.local}:{c.remote}" for c in conflicts)
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def acked_conflicts(db_path: Path) -> str | None:
+    return _read_state(db_path).get("acked_conflicts")
+
+
+def ack_conflicts(db_path: Path, signature: str) -> None:
+    state = _read_state(db_path)
+    state["acked_conflicts"] = signature
+    _write_state(db_path, state)
