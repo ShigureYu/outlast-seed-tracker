@@ -222,6 +222,7 @@ class Overlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowTitle("OPP Overlay")
         self._test_db = DB_PATH.name != DEFAULT_DB_NAME
         self.setMinimumWidth(MIN_WINDOW_WIDTH)
@@ -337,6 +338,7 @@ class Overlay(QWidget):
         self._collapsed = False
         self._input_labels: dict[str, str] = {}
         self._hint_token = 0
+        self._log_stamp: tuple[int, int] | None = None
 
         self.shortcut = QShortcut(QKeySequence("F5"), self)
         self.shortcut.activated.connect(lambda: self.refresh(force=True))
@@ -365,6 +367,18 @@ class Overlay(QWidget):
     def _poll(self) -> None:
         if self._editing:  # 录入中不打断
             return
+        # 日志文件没变就什么都不做：省掉整读和布局重算
+        log_file = find_latest_log()
+        if log_file is None:
+            return
+        try:
+            stat = log_file.stat()
+            stamp = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return
+        if stamp == self._log_stamp:
+            return
+        self._log_stamp = stamp
         self.refresh()
 
     def refresh(self, force: bool = False) -> None:
@@ -565,12 +579,14 @@ class Overlay(QWidget):
             return
         self.refresh(force=True)
 
-    def _set_editing(self, editing: bool) -> None:
+    def _set_editing(self, editing: bool, focus: bool = False) -> None:
         self._editing = editing
         self.footer.setVisible(True)
         self.save_button.setVisible(editing and not self._collapsed)
         self.cancel_button.setVisible(editing and not self._collapsed)
-        if editing:
+        if editing and focus:
+            # 只有用户双击进入编辑时才抢焦点，自动刷新时绝不抢，
+            # 否则会把游戏窗口的焦点顶掉（表现为切回游戏卡一下、鼠标跑到悬浮窗）
             first = next(iter(self._inputs.values()), None)
             if first is not None:
                 first.setFocus()
@@ -680,7 +696,7 @@ class Overlay(QWidget):
         self._editing_existing = codes is not None
         self._clear_body()
         self._render_rows(info, codes or {}, readonly=False)
-        self._set_editing(True)
+        self._set_editing(True, focus=True)
         self._set_hint("")
         self._fit()
 
@@ -690,6 +706,7 @@ class Overlay(QWidget):
         self._collapsed = False
         self._input_labels: dict[str, str] = {}
         self._hint_token = 0
+        self._log_stamp: tuple[int, int] | None = None
         self._set_hint("")
         self.refresh(force=True)
 
@@ -724,6 +741,7 @@ class Overlay(QWidget):
         self._collapsed = False
         self._input_labels: dict[str, str] = {}
         self._hint_token = 0
+        self._log_stamp: tuple[int, int] | None = None
         # 立刻按库里读回来的值重建，避免界面显示"看起来成功"的假象
         self.refresh(force=True)
         self._set_hint("已保存")
