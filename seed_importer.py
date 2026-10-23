@@ -23,7 +23,9 @@ import openpyxl
 
 logger = logging.getLogger(__name__)
 
-from app_paths import DB_PATH, XLSX_PATH, enable_utf8_stdout
+from app_paths import DATA_DIR, XLSX_PATH, enable_utf8_stdout
+
+DB_PATH = DATA_DIR / "seed.db"  # 正式库，固定名字，故意不跟随 config.json
 
 # --- 当前硬编码的一关：被告判决 / 法院 ---
 SHEET_NAME = "被告判决"

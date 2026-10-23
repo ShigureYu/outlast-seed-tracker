@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 import updater
-from app_paths import DB_PATH, enable_utf8_stdout, ensure_database
+from app_paths import DB_PATH, enable_utf8_stdout, ensure_database, load_config
 from log_parser import (
     extract_seed_from_log,
     extract_trial_id_from_log,
@@ -326,8 +326,9 @@ class Overlay(QWidget):
         self.quit_shortcut = QShortcut(QKeySequence("Esc"), self)
         self.quit_shortcut.activated.connect(self.close)
 
+        poll_seconds = int(load_config().get("poll_seconds") or POLL_MS // 1000)
         self._timer = QTimer(self)
-        self._timer.setInterval(POLL_MS)
+        self._timer.setInterval(max(5, poll_seconds) * 1000)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
 
@@ -382,6 +383,12 @@ class Overlay(QWidget):
             return
 
         self._set_trial_text(info["name_zh"] or info["trial_id"])
+
+        if not info["slots"]:
+            # 表存在但 meta 没登记任何列：只显示 Seed 和关卡名
+            self._set_editing(False)
+            self._fit()
+            return
 
         codes = read_codes(seed, trial_id=trial)
         if codes is None:
@@ -783,6 +790,7 @@ def _selftest() -> int:
 
     lines = [
         f"db: {DB_PATH}",
+        f"config: {load_config().get('database')} / poll={load_config().get('poll_seconds')}s",
         f"db_exists: {DB_PATH.is_file()}",
         f"seed: {window.seed_label.text()}",
         f"trial: {window.trial_label.text() or '(无)'}",

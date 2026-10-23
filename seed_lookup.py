@@ -186,12 +186,20 @@ def describe_trial(
         meta = get_trial_meta(conn, trial)
 
     labels = _parse_labels(meta.get("labels"))
+    # 渲染什么、按什么顺序，完全由 labels 决定。
+    # 键在表里没有对应列时**依然渲染**（值显示为“—”），
+    # 这样“这列应该有数据但没有”能一眼看出来，而不是被静默跳过。
+    slots = list(labels.items())
+    missing = [name for name in labels if name not in symbols]
+    if missing:
+        logger.warning("labels 里这些键在表 %s 中不存在，界面会显示为缺值: %s", trial, missing)
+
     return {
         "trial_id": trial,
         "name_zh": meta["name_zh"],
         "map_name": meta["map_name"],
         # 没有映射就直接显示列名（英文），不为某一关写死兜底
-        "slots": [(name, labels.get(name) or name) for name in symbols],
+        "slots": slots,
     }
 
 
@@ -237,9 +245,9 @@ def save_codes(
         _check_trial(conn, trial)
         columns = get_symbols(conn, trial)
 
-        unknown = set(codes) - set(columns)
+        unknown = sorted(set(codes) - set(columns))
         if unknown:
-            raise ValueError(f"表 {trial} 里没有这些列: {sorted(unknown)}")
+            raise ValueError(f"表 {trial} 缺少列 {unknown}，请先补列再保存")
 
         values: list[str | None] = []
         for name in columns:
