@@ -30,6 +30,9 @@ OPPOverlay.zip
 # Windows 快捷方式
 *.lnk
 
-# 本地启动脚本与私人笔记
+# 本地启动脚本与私人笔记（源码运行才用得到，用户只拿 exe）
 读取Seed.cmd
+启动悬浮窗.cmd
+重置测试库.cmd
+合并到主库.cmd
 项目描述.txt
