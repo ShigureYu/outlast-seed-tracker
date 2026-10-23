@@ -23,6 +23,7 @@ import re
 import sqlite3
 import sys
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 from log_parser import normalize_trial_id, read_current_seed, read_current_state, read_current_trial_id
@@ -57,7 +58,8 @@ def get_symbols(conn: sqlite3.Connection, trial_id: str) -> list[str]:
     以后加新关、图案数量变了，这里不用改。
     """
     columns = [row[1] for row in conn.execute(f"PRAGMA table_info({trial_id})")]
-    return [c for c in columns if c != "seed"]
+    # seed 是主键，updated_at 是审计字段，都不是图案
+    return [c for c in columns if c not in ("seed", "updated_at")]
 
 
 def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
@@ -137,6 +139,15 @@ def lookup_from_log(
     if seed is None:
         return trial, None, None
     return trial, seed, lookup(seed, trial_id=trial, db_path=db_path)
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def _now() -> str:
+    """本地时间的 ISO 串，精度到秒，足够做人读的时间戳。"""
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _parse_labels(raw: str | None) -> dict[str, str]:
@@ -236,10 +247,13 @@ def save_codes(
             text = str(raw).strip() if raw is not None else ""
             values.append(text or None)
 
+        has_time = "updated_at" in _table_columns(conn, trial)
+        names = ["seed", *columns] + (["updated_at"] if has_time else [])
+        marks = ", ".join("?" * len(names))
+        params = [seed_value, *values] + ([_now()] if has_time else [])
         conn.execute(
-            f"INSERT OR REPLACE INTO {trial} (seed, {', '.join(columns)}) "
-            f"VALUES ({', '.join('?' * (len(columns) + 1))})",
-            (seed_value, *values),
+            f"INSERT OR REPLACE INTO {trial} ({', '.join(names)}) VALUES ({marks})",
+            params,
         )
         conn.commit()
 

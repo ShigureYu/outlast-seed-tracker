@@ -100,10 +100,19 @@ def create_schema(conn: sqlite3.Connection) -> None:
             spiral   TEXT,
             triangle TEXT,
             star     TEXT,
-            sun      TEXT
+            sun      TEXT,
+            updated_at TEXT
         )
         """
     )
+
+
+def ensure_columns(conn: sqlite3.Connection) -> None:
+    """老库没有 updated_at 列时补上（SQLite 支持 ADD COLUMN，无需重建）。"""
+    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({TRIAL_ID})")]
+    if "updated_at" not in columns:
+        conn.execute(f"ALTER TABLE {TRIAL_ID} ADD COLUMN updated_at TEXT")
+        logger.info("已为 %s 添加 updated_at 列", TRIAL_ID)
 
 
 def load_rows() -> tuple[list[tuple], list[tuple[int, int, str]]]:
@@ -156,6 +165,7 @@ def import_all() -> None:
 
     with closing(sqlite3.connect(DB_PATH)) as conn:
         create_schema(conn)
+        ensure_columns(conn)
         conn.execute(
             f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels) "
             f"VALUES (?, ?, ?, ?)",

@@ -18,6 +18,7 @@ import sqlite3
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -175,11 +176,18 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
                 report.new_trials.append(table)
 
             local_columns = _columns(local, table)
-            if set(columns) - set(local_columns):
-                logger.warning("本地表 %s 结构与远端不一致，跳过", table)
+            missing = set(columns) - set(local_columns)
+            if missing == {"updated_at"}:
+                # 老库没有审计列：补上就行，没必要因此拒绝整张表
+                local.execute(f"ALTER TABLE {table} ADD COLUMN updated_at TEXT")
+                local_columns = _columns(local, table)
+                missing = set()
+            if missing:
+                logger.warning("本地表 %s 缺少列 %s，跳过", table, sorted(missing))
                 continue
 
-            palette = [c for c in columns if c != "seed"]
+            # updated_at 只做审计，不参与值比对，否则每行都会报冲突
+            palette = [c for c in columns if c not in ("seed", "updated_at")]
             for row in remote.execute(f"SELECT {', '.join(columns)} FROM {table}"):
                 seed = row["seed"]
                 current = local.execute(
@@ -221,10 +229,19 @@ def apply_conflicts(
         for conflict in conflicts:
             if not use_remote.get(conflict.key):
                 continue
-            local.execute(
-                f"UPDATE {conflict.trial_id} SET {conflict.slot}=? WHERE seed=?",
-                (conflict.remote, conflict.seed),
-            )
+            has_time = "updated_at" in [
+                row[1] for row in local.execute(f"PRAGMA table_info({conflict.trial_id})")
+            ]
+            if has_time:
+                local.execute(
+                    f"UPDATE {conflict.trial_id} SET {conflict.slot}=?, updated_at=? WHERE seed=?",
+                    (conflict.remote, datetime.now().isoformat(timespec="seconds"), conflict.seed),
+                )
+            else:
+                local.execute(
+                    f"UPDATE {conflict.trial_id} SET {conflict.slot}=? WHERE seed=?",
+                    (conflict.remote, conflict.seed),
+                )
             changed += 1
         local.commit()
     return changed
