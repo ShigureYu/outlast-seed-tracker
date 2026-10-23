@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 POLL_MS = 60_000
 WINDOW_WIDTH = 420
+BADGE_EXTRA_WIDTH = 60  # 测试库标记占用的额外宽度
 
 STYLE = """
 QWidget {
@@ -115,11 +116,11 @@ QLabel#slot {
     color: #d8dbe2;
 }
 QLabel#badge {
-    font-size: 12px;
+    font-size: 15px;
+    padding: 1px 10px;
     color: #ffcc66;
     border: 1px solid rgba(255, 204, 102, 130);
-    border-radius: 4px;
-    padding: 0 6px;
+    border-radius: 6px;
 }
 QLabel#refresh {
     font-size: 15px;
@@ -220,7 +221,9 @@ class Overlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("OPP Overlay")
-        self.setFixedWidth(WINDOW_WIDTH)
+        self._test_db = DB_PATH.name != DEFAULT_DB_NAME
+        # 测试库要额外放一个标记，给它留出宽度，正式库下窗口宽度不变
+        self.setFixedWidth(WINDOW_WIDTH + (BADGE_EXTRA_WIDTH if self._test_db else 0))
         self.setStyleSheet(STYLE)
 
         self._drag_offset: QPoint | None = None
@@ -242,13 +245,13 @@ class Overlay(QWidget):
         top.setSpacing(6)
         self.seed_label = QLabel("Seed: --")
         self.seed_label.setObjectName("seed")
-        self.seed_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.seed_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         # 关卡名：夹在 Seed 和按钮中间，只显示中文名
         self.trial_label = QLabel("")
         self.trial_label.setObjectName("trial")
         self.trial_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.trial_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.trial_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.trial_label.setVisible(False)
 
         self.refresh_button = ClickableLabel("刷新")
@@ -257,10 +260,11 @@ class Overlay(QWidget):
         self.refresh_button.clicked.connect(lambda: self.refresh(force=True))
 
         # 用的不是正式库时给个显眼标记，避免忘了自己在沙盒里
-        self.db_badge = QLabel("测试库")
+        self.db_badge = QLabel("测试")
         self.db_badge.setObjectName("badge")
+        self.db_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.db_badge.setToolTip(f"当前数据库：{DB_PATH.name}")
-        self.db_badge.setVisible(DB_PATH.name != DEFAULT_DB_NAME)
+        self.db_badge.setVisible(self._test_db)
 
         self.close_button = ClickableLabel("×")
         self.close_button.setObjectName("close")
@@ -532,7 +536,12 @@ class Overlay(QWidget):
             self.ignore_button.setVisible(True)
             self._pending_report = report
         else:
-            self.update_label.setText(f"已同步 {report.inserted} 条新记录")
+            parts = []
+            if report.inserted:
+                parts.append(f"{report.inserted} 条新记录")
+            if report.meta_updated:
+                parts.append(f"{report.meta_updated} 项关卡配置")
+            self.update_label.setText("已同步 " + "、".join(parts) if parts else "数据已是最新")
             self.sync_button.setText("完成")
             self.ignore_button.setVisible(False)
             self._pending_report = None

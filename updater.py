@@ -51,6 +51,7 @@ class MergeReport:
     new_trials: list[str] = field(default_factory=list)
     refused: bool = False
     reason: str = ""
+    meta_updated: int = 0
 
 
 def _state_path(db_path: Path) -> Path:
@@ -151,14 +152,39 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
             exists = local.execute(
                 f"SELECT 1 FROM {META_TABLE} WHERE trial_id=?", (row["trial_id"],)
             ).fetchone()
+            keys = list(row.keys())
             if not exists:
-                keys = row.keys()
                 local.execute(
                     f"INSERT INTO {META_TABLE} ({', '.join(keys)}) "
                     f"VALUES ({', '.join('?' * len(keys))})",
                     tuple(row[k] for k in keys),
                 )
                 report.new_trials.append(row["trial_id"])
+                continue
+
+            # 已存在的关卡：meta 以远端为准（关卡名、labels 顺序都算配置）
+            fields = [k for k in keys if k != "trial_id"]
+            current = local.execute(
+                f"SELECT {', '.join(fields)} FROM {META_TABLE} WHERE trial_id=?",
+                (row["trial_id"],),
+            ).fetchone()
+            changed = [
+                (name, current_value, row[name])
+                for name, current_value in zip(fields, current)
+                if current_value != row[name]
+            ]
+            if changed:
+                assignments = ", ".join(f"{name}=?" for name, _, _ in changed)
+                local.execute(
+                    f"UPDATE {META_TABLE} SET {assignments} WHERE trial_id=?",
+                    [new for _, _, new in changed] + [row["trial_id"]],
+                )
+                report.meta_updated += len(changed)
+                for name, old_value, new_value in changed:
+                    logger.info(
+                        "关卡配置更新 %s.%s: %r -> %r",
+                        row["trial_id"], name, old_value, new_value,
+                    )
 
         # 2) 每张答案表逐行比对
         for table in _tables(remote):

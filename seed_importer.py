@@ -30,7 +30,7 @@ DB_PATH = DATA_DIR / "seed.db"  # 正式库，固定名字，故意不跟随 con
 # --- 当前硬编码的一关：被告判决 / 法院 ---
 SHEET_NAME = "被告判决"
 TRIAL_ID = "CHJ_MT02"
-NAME_ZH = "被告判决"
+NAME_ZH = "对被告作出判决"
 MAP_NAME = "CourthouseJudicial"
 
 META_TABLE = "TRIAL_META"
