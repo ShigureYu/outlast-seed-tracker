@@ -303,6 +303,8 @@ class Overlay(QWidget):
         self.collapse_button = ClickableLabel("折叠")
         self.collapse_button.setObjectName("refresh")
         self.collapse_button.setToolTip("只保留顶栏")
+        self.collapse_button.setFixedHeight(24)
+        self.collapse_button.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.collapse_button.clicked.connect(self.toggle_collapse)
 
         footer.addWidget(self.collapse_button)
@@ -311,6 +313,7 @@ class Overlay(QWidget):
         footer.addWidget(self.cancel_button)
         footer.addWidget(self.save_button)
         self.footer = QWidget(self)
+        self.footer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.footer.setLayout(footer)
         root.addWidget(self.footer)
 
@@ -404,6 +407,7 @@ class Overlay(QWidget):
             # 状态 D：连 seed 都没有，什么都不渲染
             self._set_trial_text("")
             self._set_editing(False)
+            self.body.setVisible(False)
             self._fit()
             return
 
@@ -412,6 +416,7 @@ class Overlay(QWidget):
             # 状态 A：库里没有这张表
             self._set_trial_text("")
             self._set_editing(False)
+            self.body.setVisible(False)
             self._fit()
             return
 
@@ -518,6 +523,10 @@ class Overlay(QWidget):
                 Qt.AlignmentFlag.AlignHCenter,
             )
 
+        # 渲染出内容后要把 body 重新显示出来（之前可能因无数据被隐藏）
+        self.body.setVisible(not self._collapsed)
+        self.body.setMaximumHeight(16777215 if not self._collapsed else 0)
+
         if center:
             self.grid.addWidget(QWidget(), 0, len(slots) + 1)
             self.grid.setColumnStretch(len(slots) + 1, 1)
@@ -531,10 +540,12 @@ class Overlay(QWidget):
         layout = self.layout()
         if layout is None:
             return
-        wanted = layout.sizeHint().width() + 4
-        width = max(MIN_WINDOW_WIDTH, min(MAX_WINDOW_WIDTH, wanted))
+        hint = layout.sizeHint()
+        width = max(MIN_WINDOW_WIDTH, min(MAX_WINDOW_WIDTH, hint.width() + 4))
         if width != self.width():
             self.setFixedWidth(width)
+        if hint.height() != self.height():
+            self.setFixedHeight(hint.height())
         self.adjustSize()
 
     def toggle_collapse(self) -> None:
@@ -544,8 +555,23 @@ class Overlay(QWidget):
         self.collapse_button.setToolTip("恢复数据区" if self._collapsed else "只保留顶栏")
         self._apply_collapsed()
 
+    def _body_has_content(self) -> bool:
+        layout = self.body.layout()
+        return layout is not None and layout.count() > 0
+
     def _apply_collapsed(self) -> None:
-        self.body.setVisible(not self._collapsed)
+        show_body = (not self._collapsed) and self._body_has_content()
+        self.body.setVisible(show_body)
+        # 折叠时把 body 最大高度压成 0，避免残留高度把面板拉长
+        self.body.setMaximumHeight(16777215 if show_body else 0)
+        # 显隐切换后布局会缓存旧尺寸，强制失效并在下一轮事件循环重算，
+        # 否则折叠/展开几次后窗口会被拉长
+        self.body.updateGeometry()
+        body_layout = self.body.layout()
+        if body_layout is not None:
+            body_layout.invalidate()
+        for widget in self.body.findChildren(QWidget):
+            widget.updateGeometry()
         self.footer.setVisible(True)  # 折叠按钮就在这一行，不能隐藏
         self.save_button.setVisible(self._editing and not self._collapsed)
         self.cancel_button.setVisible(self._editing and not self._collapsed)
@@ -554,6 +580,7 @@ class Overlay(QWidget):
         if self._collapsed:
             self.update_bar.setVisible(False)
         self._fit()
+        QTimer.singleShot(0, self._fit)
 
     def _on_return(self, name: str) -> None:
         """Enter：跳下一个框；最后一个框则在“填满且有改动”时保存。"""
@@ -643,10 +670,14 @@ class Overlay(QWidget):
             layout.invalidate()
             layout.activate()
             # 宽度跟着内容走：格子少的关卡不会两边空一大截
-            wanted = layout.sizeHint().width() + 4
-            width = max(MIN_WINDOW_WIDTH, min(MAX_WINDOW_WIDTH, wanted))
+            hint = layout.sizeHint()
+            width = max(MIN_WINDOW_WIDTH, min(MAX_WINDOW_WIDTH, hint.width() + 4))
             if width != self.width():
                 self.setFixedWidth(width)
+            # 高度也直接定死：adjustSize() 在显隐切换后经常算不准，
+            # 会出现折叠/展开来回切换时面板被拉长
+            if hint.height() != self.height():
+                self.setFixedHeight(hint.height())
         self.adjustSize()
         self.update()
         QTimer.singleShot(0, self._refit_width)
@@ -798,6 +829,7 @@ class Overlay(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        QTimer.singleShot(0, self._fit)
         if not self._placed:
             self._placed = True
             self._move_to_top_center()
