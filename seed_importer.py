@@ -90,9 +90,9 @@ TRIALS: tuple[TrialSpec, ...] = (
         columns=(
             ("triangle", "三角形"),
             ("skull", "骷髅"),
-            ("sun", "太阳"),
+            ("sun", "太阳/五角星"),
         ),
-        code_length=1,
+        code_length=3,
     ),
 )
 

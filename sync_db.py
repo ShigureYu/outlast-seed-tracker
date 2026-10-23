@@ -54,7 +54,13 @@ def merge(main_path: Path, test_path: Path) -> None:
 
     print(f"主库:   {main_path}")
     print(f"测试库: {test_path}")
-    print(f"新增 {report.inserted} 条；主库已有而值不同的 {len(report.conflicts)} 处（未改动）")
+    summary = [f"新增 {report.inserted} 条"]
+    if report.new_trials:
+        summary.append(f"新建/补齐关卡 {len(report.new_trials)} 个（{', '.join(report.new_trials)}）")
+    if report.meta_updated:
+        summary.append(f"关卡配置更新 {report.meta_updated} 项")
+    summary.append(f"值不同 {len(report.conflicts)} 处（未改动）")
+    print("；".join(summary))
 
     for conflict in report.conflicts[:10]:
         print(
@@ -64,7 +70,8 @@ def merge(main_path: Path, test_path: Path) -> None:
     if len(report.conflicts) > 10:
         print(f"  ... 还有 {len(report.conflicts) - 10} 处")
 
-    if report.inserted:
+    changed = report.inserted or report.meta_updated or report.new_trials
+    if changed:
         print("主库已更新，记得 git add data/seed.db 并提交。")
     else:
         print("主库没有需要并入的新数据。")

@@ -197,7 +197,8 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 ).fetchone()[0]
                 local.execute(create)
-                report.new_trials.append(table)
+                if table not in report.new_trials:
+                    report.new_trials.append(table)
 
             local_columns = _columns(local, table)
             missing = set(columns) - set(local_columns)

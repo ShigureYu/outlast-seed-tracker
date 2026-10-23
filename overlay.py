@@ -270,7 +270,7 @@ class Overlay(QWidget):
         self.close_button.setObjectName("close")
         self.close_button.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.close_button.setFixedSize(26, 26)
-        self.close_button.setToolTip("关闭（Esc）")
+        self.close_button.setToolTip("关闭")
         self.close_button.clicked.connect(self.close)
 
         top.addWidget(self.seed_label)
@@ -299,8 +299,14 @@ class Overlay(QWidget):
         self.save_button.clicked.connect(self.save)
         self.cancel_button = QPushButton("取消")
         self.cancel_button.clicked.connect(self.cancel_edit)
-        footer.addWidget(self.hint)
+        self.collapse_button = ClickableLabel("折叠")
+        self.collapse_button.setObjectName("refresh")
+        self.collapse_button.setToolTip("只保留顶栏")
+        self.collapse_button.clicked.connect(self.toggle_collapse)
+
+        footer.addWidget(self.collapse_button)
         footer.addStretch(1)
+        footer.addWidget(self.hint)
         footer.addWidget(self.cancel_button)
         footer.addWidget(self.save_button)
         self.footer = QWidget(self)
@@ -323,28 +329,19 @@ class Overlay(QWidget):
         self.update_bar.setVisible(False)
         root.addWidget(self.update_bar)
 
-        # ---- 底部：折叠开关（左下角）----
-        bottom = QHBoxLayout()
-        self.collapse_button = ClickableLabel("折叠")
-        self.collapse_button.setObjectName("refresh")
-        self.collapse_button.setToolTip("只保留顶栏")
-        self.collapse_button.clicked.connect(self.toggle_collapse)
-        bottom.addWidget(self.collapse_button)
-        bottom.addStretch(1)
-        root.addLayout(bottom)
 
 
         self._worker = None
         self._editing_existing = False
         self._code_length = 3
         self._collapsed = False
+        self._input_labels: dict[str, str] = {}
+        self._hint_token = 0
 
         self.shortcut = QShortcut(QKeySequence("F5"), self)
         self.shortcut.activated.connect(lambda: self.refresh(force=True))
         self.sync_shortcut = QShortcut(QKeySequence("Ctrl+F5"), self)
         self.sync_shortcut.activated.connect(self.sync_now)
-        self.quit_shortcut = QShortcut(QKeySequence("Esc"), self)
-        self.quit_shortcut.activated.connect(self.close)
 
         poll_seconds = int(load_config().get("poll_seconds") or POLL_MS // 1000)
         self._timer = QTimer(self)
@@ -384,7 +381,7 @@ class Overlay(QWidget):
         # 有意显示日志原文（如 58058），而不是还原后的 58：
         # 排查问题时可以直接拿这个数去日志里搜，省掉心算 ×1001 的逆运算。
         self.seed_label.setText(f"Seed: {raw_seed or '--'}")
-        self.hint.setText("")
+        self._set_hint("")
         self._clear_body()
 
         if seed is None:
@@ -450,6 +447,7 @@ class Overlay(QWidget):
         眼睛要来回扫；竖排之后名字和数字天然对齐。
         """
         self._inputs = {}
+        self._input_labels = {}
         slots = info["slots"]
         code_length = int(info.get("code_length") or 3)
         self._code_length = code_length
@@ -490,6 +488,7 @@ class Overlay(QWidget):
                 field.setText(values.get(name) or "")
                 self._inputs[name] = field
 
+            self._input_labels[name] = label
             column.addWidget(caption)
             column.addWidget(field, 0, Qt.AlignmentFlag.AlignHCenter)
 
@@ -528,14 +527,49 @@ class Overlay(QWidget):
 
     def _apply_collapsed(self) -> None:
         self.body.setVisible(not self._collapsed)
-        self.footer.setVisible(self._editing and not self._collapsed)
+        self.footer.setVisible(True)  # 折叠按钮就在这一行，不能隐藏
+        self.save_button.setVisible(self._editing and not self._collapsed)
+        self.cancel_button.setVisible(self._editing and not self._collapsed)
+        # 折叠时底边栏只保留折叠按钮
+        self.hint.setVisible(not self._collapsed)
         if self._collapsed:
             self.update_bar.setVisible(False)
         self._fit()
 
+    def _set_hint(self, text: str, error: bool = False, auto_hide_ms: int = 3000) -> None:
+        """提示文字：成功绿色、出错红色，几秒后自动消失。
+
+        消失时直接刷新界面（而不是手工清空控件），
+        这样界面状态永远来自数据库，不会出现“提示没了但显示还是旧的”。
+        """
+        self._hint_token += 1
+        token = self._hint_token
+
+        self.hint.setText(text)
+        colour = "#ff8a80" if error else "#8fe3a0"
+        self.hint.setStyleSheet(f"color: {colour};")
+        self.hint.setVisible(bool(text) and not self._collapsed)
+
+        if text and auto_hide_ms:
+            QTimer.singleShot(auto_hide_ms, lambda: self._expire_hint(token))
+        self._fit()
+
+    def _expire_hint(self, token: int) -> None:
+        """提示到期：没在编辑就整体刷新，正在编辑则只清掉文字（别冲掉用户输入）。"""
+        if token != self._hint_token:
+            return
+        if self._editing:
+            self.hint.setText("")
+            self.hint.setVisible(False)
+            self._fit()
+            return
+        self.refresh(force=True)
+
     def _set_editing(self, editing: bool) -> None:
         self._editing = editing
-        self.footer.setVisible(editing and not self._collapsed)
+        self.footer.setVisible(True)
+        self.save_button.setVisible(editing and not self._collapsed)
+        self.cancel_button.setVisible(editing and not self._collapsed)
         if editing:
             first = next(iter(self._inputs.values()), None)
             if first is not None:
@@ -549,6 +583,11 @@ class Overlay(QWidget):
         """
         # invalidate + activate 才会让 sizeHint 立刻反映新内容；
         # 再补一次下一轮事件循环的 adjustSize，处理布局延迟生效的情况
+        # 子布局也要失效，否则 footer/提示条隐藏后它们的旧尺寸仍被缓存
+        for child in (self.body, self.footer, self.update_bar):
+            child_layout = child.layout()
+            if child_layout is not None:
+                child_layout.invalidate()
         self.grid.invalidate()
         layout = self.layout()
         if layout is not None:
@@ -642,14 +681,16 @@ class Overlay(QWidget):
         self._clear_body()
         self._render_rows(info, codes or {}, readonly=False)
         self._set_editing(True)
-        self.hint.setText("")
+        self._set_hint("")
         self._fit()
 
     def cancel_edit(self) -> None:
         self._editing_existing = False
         self._code_length = 3
         self._collapsed = False
-        self.hint.setText("")
+        self._input_labels: dict[str, str] = {}
+        self._hint_token = 0
+        self._set_hint("")
         self.refresh(force=True)
 
     # ---------- 保存 ----------
@@ -662,27 +703,30 @@ class Overlay(QWidget):
             text = field.text().strip()
             expected = self._code_length
             if text and len(text) != expected:
-                self.hint.setText(f"{name} 需要 {expected} 位数字")
+                label = getattr(self, "_input_labels", {}).get(name, name)
+                self._set_hint(f"{label} 需要 {expected} 位数字", error=True)
                 return
             codes[name] = text or None
 
         if not any(codes.values()) and not self._editing_existing:
-            self.hint.setText("至少填一个图案")
+            self._set_hint("至少填一个图案", error=True)
             return
 
         try:
             save_codes(self._seed, codes, trial_id=self._trial)
         except (OSError, ValueError) as exc:
             logger.exception("保存失败")
-            self.hint.setText(f"保存失败: {exc}")
+            self._set_hint(f"保存失败: {exc}", error=True)
             return
 
         self._editing_existing = False
         self._code_length = 3
         self._collapsed = False
+        self._input_labels: dict[str, str] = {}
+        self._hint_token = 0
         # 立刻按库里读回来的值重建，避免界面显示"看起来成功"的假象
         self.refresh(force=True)
-        self.hint.setText("已保存")
+        self._set_hint("已保存")
 
     # ---------- 窗口行为 ----------
     def paintEvent(self, _event) -> None:
@@ -706,7 +750,7 @@ class Overlay(QWidget):
         self.move(area.center().x() - self.width() // 2, area.top() + 12)
 
     def closeEvent(self, event) -> None:
-        """点 × 或按 Esc 时必须真的退出进程，而不是只隐藏窗口。
+        """点 × 时必须真的退出进程，而不是只隐藏窗口。
 
         Tool 窗口不会被 Qt 当作"最后一个主窗口"，光 close() 不会触发退出；
         再加上后台可能还有检查更新的线程卡在网络请求上，进程会一直活着。
