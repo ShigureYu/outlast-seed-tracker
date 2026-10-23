@@ -504,7 +504,21 @@ class Overlay(QWidget):
                 first.setFocus()
 
     def _fit(self) -> None:
+        """按内容重算窗口尺寸。
+
+        必须先 activate() 让布局立刻重新计算，否则 adjustSize() 用的是旧尺寸：
+        清空中部后窗口仍停在原高度，看起来就像"没刷新"。
+        """
+        # invalidate + activate 才会让 sizeHint 立刻反映新内容；
+        # 再补一次下一轮事件循环的 adjustSize，处理布局延迟生效的情况
+        self.grid.invalidate()
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
         self.adjustSize()
+        self.update()
+        QTimer.singleShot(0, self.adjustSize)
 
     # ---------- 数据同步 ----------
     def check_updates(self) -> None:
