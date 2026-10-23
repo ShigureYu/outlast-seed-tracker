@@ -1,6 +1,6 @@
 [project]
 name = "outlast-seed-tracker"
-version = "0.2.2"
+version = "0.2.3"
 description = "从游戏日志读取 Trial ID / Seed，并在悬浮窗里显示对应密码"
 readme = "README.md"
 requires-python = ">=3.12"
