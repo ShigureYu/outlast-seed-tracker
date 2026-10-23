@@ -67,6 +67,11 @@ jobs:
           files: dist/OPPOverlay.exe
           generate_release_notes: true
           body: |
+            ## 当前支持的关卡
+
+            本版本仅支持 **对被告作出判决（CHJ_MT02）**。其它关卡正在陆续补充数据，
+            更新数据后无需重新下载 exe，启动时会自动同步。
+
             ## 用法
 
             1. 下载 `OPPOverlay.exe`，放到一个你能找到的文件夹（不要放临时目录）。
