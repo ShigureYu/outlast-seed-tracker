@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PyQt6.QtCore import QPoint, QRegularExpression, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QRegularExpression, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (
     QColor,
@@ -230,7 +230,6 @@ class Overlay(QWidget):
 
         self._drag_offset: QPoint | None = None
         self._placed = False
-        self._collapsed = False
         self._editing = False
         self._last_key: tuple[str | None, str | None] | None = None
 
@@ -299,8 +298,11 @@ class Overlay(QWidget):
         self.hint.setObjectName("hint")
         self.save_button = QPushButton("保存")
         self.save_button.clicked.connect(self.save)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.clicked.connect(self.cancel_edit)
         footer.addWidget(self.hint)
         footer.addStretch(1)
+        footer.addWidget(self.cancel_button)
         footer.addWidget(self.save_button)
         self.footer = QWidget(self)
         self.footer.setLayout(footer)
@@ -312,45 +314,24 @@ class Overlay(QWidget):
         bar.setContentsMargins(0, 0, 0, 0)
         self.update_label = QLabel("")
         self.update_label.setObjectName("update")
-        self.sync_button = ClickableLabel("同步")
-        self.sync_button.setObjectName("refresh")
-        self.sync_button.clicked.connect(self.apply_update)
-        self.ignore_button = ClickableLabel("忽略")
+        self.update_label.setWordWrap(True)
+        self.ignore_button = ClickableLabel("知道了")
         self.ignore_button.setObjectName("refresh")
         self.ignore_button.clicked.connect(self.dismiss_update)
         bar.addWidget(self.update_label)
         bar.addStretch(1)
-        bar.addWidget(self.sync_button)
         bar.addWidget(self.ignore_button)
         self.update_bar.setVisible(False)
         root.addWidget(self.update_bar)
 
-        # ---- 冲突面板（非模态、限高可滚动，默认隐藏）----
-        self.conflict_box = QWidget(self)
-        box = QVBoxLayout(self.conflict_box)
-        box.setContentsMargins(0, 0, 0, 0)
-        self.conflict_scroll = QScrollArea(self.conflict_box)
-        self.conflict_scroll.setWidgetResizable(True)
-        self.conflict_scroll.setMaximumHeight(260)
-        self.conflict_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        inner = QWidget()
-        self.conflict_layout = QVBoxLayout(inner)
-        self.conflict_layout.setContentsMargins(0, 0, 0, 0)
-        self.conflict_layout.setSpacing(4)
-        self.conflict_scroll.setWidget(inner)
-        box.addWidget(self.conflict_scroll)
-        self.conflict_box.setVisible(False)
-        root.addWidget(self.conflict_box)
 
-        self._conflicts: list = []
-        self._pending_sig: str | None = None
-        self._choices: dict = {}
         self._worker = None
+        self._editing_existing = False
 
         self.shortcut = QShortcut(QKeySequence("F5"), self)
         self.shortcut.activated.connect(lambda: self.refresh(force=True))
+        self.sync_shortcut = QShortcut(QKeySequence("Ctrl+F5"), self)
+        self.sync_shortcut.activated.connect(self.sync_now)
         self.quit_shortcut = QShortcut(QKeySequence("Esc"), self)
         self.quit_shortcut.activated.connect(self.close)
 
@@ -433,7 +414,7 @@ class Overlay(QWidget):
     def _set_trial_text(self, text: str) -> None:
         """关卡名有内容才占位，没有就整行收起来。"""
         self.trial_label.setText(text)
-        self.trial_label.setVisible(bool(text) and not self._collapsed)
+        self.trial_label.setVisible(bool(text))
 
     def _clear_body(self) -> None:
         while self.grid.count():
@@ -481,9 +462,11 @@ class Overlay(QWidget):
                 field.setReadOnly(True)
                 field.setProperty("readOnly", "true")
                 field.setText(values.get(name) or "—")
+                field.installEventFilter(self)  # 双击进入编辑
             else:
                 field.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,3}")))
                 field.setPlaceholderText("---")
+                field.setText(values.get(name) or "")
                 self._inputs[name] = field
 
             column.addWidget(caption)
@@ -500,7 +483,7 @@ class Overlay(QWidget):
 
     def _set_editing(self, editing: bool) -> None:
         self._editing = editing
-        self.footer.setVisible(editing and not self._collapsed)
+        self.footer.setVisible(editing)
         if editing:
             first = next(iter(self._inputs.values()), None)
             if first is not None:
@@ -524,8 +507,13 @@ class Overlay(QWidget):
         QTimer.singleShot(0, self.adjustSize)
 
     # ---------- 数据同步 ----------
+    def sync_now(self) -> None:
+        """手动同步一次，即使没有任何变化也给出回执。"""
+        self._force_notice = True
+        self.check_updates()
+
     def check_updates(self) -> None:
-        """启动时后台检查一次；没有任何网络或解析失败会打扰用户。"""
+        """启动时后台检查一次；网络或解析失败静默忽略。"""
         if self._worker is not None and self._worker.isRunning():
             return
         self._worker = UpdateWorker(DB_PATH, self)
@@ -535,213 +523,75 @@ class Overlay(QWidget):
     def on_update_checked(self, report) -> None:
         self._worker = None
         if report is None:
-            return  # 没变化或失败：界面完全不动
+            return  # 没变化或请求失败：一个像素都不打扰
 
         if report.refused:
-            # 远端数据异常：只提示，不给合并入口
-            self.update_label.setText(f"远端数据异常，已跳过（{report.reason}）")
-            self.sync_button.setVisible(False)
-            self.ignore_button.setText("知道了")
-            self.update_bar.setVisible(True)
-            self._pending_report = None
-            self._fit()
+            self._show_notice(f"远端数据异常，已跳过（{report.reason}）", 8000)
             return
 
-        changed = report.inserted or report.meta_updated
-        signature = updater.conflict_signature(report.conflicts) if report.conflicts else None
-        already_seen = signature is not None and signature == updater.acked_conflicts(DB_PATH)
+        parts: list[str] = []
+        if report.inserted:
+            parts.append(f"新增 {report.inserted} 条")
+        if report.meta_updated:
+            parts.append(f"配置 {report.meta_updated} 项")
 
-        if not changed and (not report.conflicts or already_seen):
-            # 例行检查无事发生：一个像素都不打扰
-            return
+        if report.conflicts:
+            # 冲突文件每次都刷新，但同一批冲突只提示一次
+            updater.write_conflicts(DB_PATH, report.conflicts)
+            signature = updater.conflict_signature(report.conflicts)
+            if signature != updater.acked_conflicts(DB_PATH):
+                updater.ack_conflicts(DB_PATH, signature)
+                parts.append(f"冲突 {len(report.conflicts)} 处（看 conflicts.txt）")
 
-        if report.conflicts and not already_seen:
-            self._pending_sig = signature
-            self.update_label.setText(f"有 {len(report.conflicts)} 处数据不一致")
-            self.sync_button.setText("处理")
-            self.ignore_button.setVisible(True)
-            self._pending_report = report
-        else:
-            parts = []
-            if report.inserted:
-                parts.append(f"{report.inserted} 条新记录")
-            if report.meta_updated:
-                parts.append(f"{report.meta_updated} 项关卡配置")
-            self.update_label.setText("已同步 " + "、".join(parts) if parts else "数据已是最新")
-            self.sync_button.setText("完成")
-            self.ignore_button.setVisible(False)
-            self._pending_report = None
-            QTimer.singleShot(4000, self._auto_hide_update)
+        if not parts:
+            if getattr(self, "_force_notice", False):
+                self._show_notice("数据已是最新", 3000)
+            self._force_notice = False
+            return  # 例行检查无事发生
+
+        self._force_notice = False
+        self._show_notice("同步完成：" + "、".join(parts), 8000)
+        if report.inserted or report.meta_updated:
             self.refresh(force=True)
 
+    def _show_notice(self, text: str, auto_hide_ms: int = 0) -> None:
+        self.update_label.setText(text)
         self.update_bar.setVisible(True)
         self._fit()
-
-    def apply_update(self) -> None:
-        report = getattr(self, "_pending_report", None)
-        if report is None:
-            self.update_bar.setVisible(False)
-            self._fit()
-            return
-        self.show_conflicts(report.conflicts)
+        if auto_hide_ms:
+            QTimer.singleShot(auto_hide_ms, self._auto_hide_update)
 
     def _auto_hide_update(self) -> None:
-        """提示停留几秒后收起，并重新按内容收缩窗口，避免底部留白。"""
         self.update_bar.setVisible(False)
         self._fit()
 
     def dismiss_update(self) -> None:
-        signature = getattr(self, "_pending_sig", None)
-        if signature:
-            updater.ack_conflicts(DB_PATH, signature)
-            self._pending_sig = None
-        self.update_bar.setVisible(False)
-        self.sync_button.setVisible(True)
-        self.ignore_button.setText("忽略")
-        self._pending_report = None
-        self._fit()
+        self._auto_hide_update()
 
-    CONFLICT_PAGE = 10
-    CONFLICT_BULK_THRESHOLD = 30
+    # ---------- 编辑 ----------
+    def eventFilter(self, obj, event):
+        """只读态双击任意数字 -> 整条进入编辑。"""
+        if event.type() == QEvent.Type.MouseButtonDblClick and not self._editing:
+            self.begin_edit()
+            return True
+        return super().eventFilter(obj, event)
 
-    def _clear_conflict_box(self) -> None:
-        while self.conflict_layout.count():
-            item = self.conflict_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
-    def show_conflicts(self, conflicts) -> None:
-        self._conflicts = list(conflicts)
-        self._choices = {c.key: True for c in conflicts}  # 默认全部用远端
-        self._page = 0
-
-        # 按 seed 聚合：同一 seed 的多个字段合成一行，行数先除以槽位数
-        groups: dict[tuple[str, int], list] = {}
-        for conflict in conflicts:
-            groups.setdefault((conflict.trial_id, conflict.seed), []).append(conflict)
-        self._groups = sorted(groups.items(), key=lambda kv: kv[0][1])
-
-        self._clear_conflict_box()
-        self.update_bar.setVisible(False)
-        self.conflict_box.setVisible(True)
-
-        if len(conflicts) > self.CONFLICT_BULK_THRESHOLD:
-            self._render_bulk()
-        else:
-            self._render_page()
-        self._fit()
-
-    def _render_bulk(self) -> None:
-        """冲突太多时逐条选没有意义，改成整批决定。"""
-        title = QLabel(
-            f"检测到 {len(self._conflicts)} 处不一致（{len(self._groups)} 个种子），"
-            f"可能不是同一份数据源。\n整批切换，或先保留本地再手工核对。"
-        )
-        title.setWordWrap(True)
-        title.setObjectName("update")
-        self.conflict_layout.addWidget(title)
-
-        row = QWidget()
-        line = QHBoxLayout(row)
-        line.setContentsMargins(0, 0, 0, 0)
-        use_remote = QPushButton("全部用远端")
-        use_remote.clicked.connect(lambda: self._bulk_apply(True))
-        keep_local = QPushButton("全部保留本地")
-        keep_local.clicked.connect(lambda: self._bulk_apply(False))
-        line.addWidget(use_remote)
-        line.addWidget(keep_local)
-        line.addStretch(1)
-        self.conflict_layout.addWidget(row)
-
-        self.conflict_scroll.setMaximumHeight(120)
-
-    def _render_page(self) -> None:
-        total_pages = max(1, -(-len(self._groups) // self.CONFLICT_PAGE))
-        start = self._page * self.CONFLICT_PAGE
-        page = self._groups[start : start + self.CONFLICT_PAGE]
-
-        title = QLabel(
-            f"{len(self._conflicts)} 处不一致 / {len(self._groups)} 个种子"
-            f"   第 {self._page + 1}/{total_pages} 页"
-        )
-        title.setObjectName("update")
-        self.conflict_layout.addWidget(title)
-
-        for (_trial, seed), items in page:
-            summary = ", ".join(
-                f"{c.slot} {c.local or '—'}→{c.remote or '—'}" for c in items[:2]
-            )
-            if len(items) > 2:
-                summary += f" 等 {len(items)} 项"
-
-            row = QWidget()
-            line = QHBoxLayout(row)
-            line.setContentsMargins(0, 0, 0, 0)
-            text = QLabel(f"{seed}   {summary}")
-            choice = QPushButton("用远端")
-            choice.setObjectName("refresh")
-            choice.setCheckable(True)
-            choice.setChecked(self._choices.get(items[0].key, True))
-            choice.setFixedSize(64, 24)
-            choice.toggled.connect(
-                lambda checked, group=items: self._set_group(group, checked)
-            )
-            line.addWidget(text)
-            line.addStretch(1)
-            line.addWidget(choice)
-            self.conflict_layout.addWidget(row)
-
-        nav = QWidget()
-        nav_line = QHBoxLayout(nav)
-        nav_line.setContentsMargins(0, 0, 0, 0)
-        prev_button = QPushButton("上一页")
-        prev_button.setEnabled(self._page > 0)
-        prev_button.clicked.connect(lambda: self._turn_page(-1))
-        next_button = QPushButton("下一页")
-        next_button.setEnabled(self._page + 1 < total_pages)
-        next_button.clicked.connect(lambda: self._turn_page(1))
-        apply_button = QPushButton("应用")
-        apply_button.clicked.connect(self.apply_conflicts)
-        nav_line.addWidget(prev_button)
-        nav_line.addWidget(next_button)
-        nav_line.addStretch(1)
-        nav_line.addWidget(apply_button)
-        self.conflict_layout.addWidget(nav)
-
-        self.conflict_scroll.setMaximumHeight(260)
-
-    def _set_group(self, items, checked: bool) -> None:
-        for conflict in items:
-            self._choices[conflict.key] = checked
-
-    def _turn_page(self, delta: int) -> None:
-        self._page = max(0, self._page + delta)
-        self._clear_conflict_box()
-        self._render_page()
-        self._fit()
-
-    def _bulk_apply(self, use_remote: bool) -> None:
-        self._choices = {c.key: use_remote for c in self._conflicts}
-        self.apply_conflicts()
-
-    def apply_conflicts(self) -> None:
-        if not self._conflicts:
+    def begin_edit(self) -> None:
+        info = describe_trial(self._trial) if self._trial else None
+        if info is None or not info["slots"]:
             return
-        signature = getattr(self, "_pending_sig", None) or updater.conflict_signature(self._conflicts)
-        updater.ack_conflicts(DB_PATH, signature)
-        self._pending_sig = None
-        changed = updater.apply_conflicts(DB_PATH, self._conflicts, self._choices)
-        self._conflicts = []
-        self._pending_report = None
-        self.conflict_box.setVisible(False)
-        self.update_label.setText(f"已同步 {changed} 处")
-        self.sync_button.setText("完成")
-        self.ignore_button.setVisible(False)
-        self.update_bar.setVisible(True)
-        self.refresh(force=True)
+        codes = read_codes(self._seed, trial_id=self._trial) if self._seed else None
+        self._editing_existing = codes is not None
+        self._clear_body()
+        self._render_rows(info, codes or {}, readonly=False)
+        self._set_editing(True)
+        self.hint.setText("")
         self._fit()
+
+    def cancel_edit(self) -> None:
+        self._editing_existing = False
+        self.hint.setText("")
+        self.refresh(force=True)
 
     # ---------- 保存 ----------
     def save(self) -> None:
@@ -756,7 +606,7 @@ class Overlay(QWidget):
                 return
             codes[name] = text or None
 
-        if not any(codes.values()):
+        if not any(codes.values()) and not self._editing_existing:
             self.hint.setText("至少填一个图案")
             return
 
@@ -767,6 +617,7 @@ class Overlay(QWidget):
             self.hint.setText(f"保存失败: {exc}")
             return
 
+        self._editing_existing = False
         # 立刻按库里读回来的值重建，避免界面显示"看起来成功"的假象
         self.refresh(force=True)
         self.hint.setText("已保存")
@@ -827,16 +678,6 @@ class Overlay(QWidget):
         self._drag_offset = None
         event.accept()
 
-    def mouseDoubleClickEvent(self, event) -> None:
-        """双击折叠/展开，嫌挡视野时用。"""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._collapsed = not self._collapsed
-            self.body.setVisible(not self._collapsed)
-            self.trial_label.setVisible(bool(self.trial_label.text()) and not self._collapsed)
-            self.footer.setVisible(self._editing and not self._collapsed)
-            self._fit()
-            event.accept()
-
 
 def take_over_instance(app: QApplication) -> QLocalServer:
     """保证只有一个实例：已经有一个在跑就请它退出，然后由本进程接管。
@@ -887,6 +728,34 @@ def _wire_quit_signal(server: QLocalServer, window: "Overlay") -> None:
     server.newConnection.connect(on_new_connection)
 
 
+def _sync_only() -> int:
+    """命令行同步一次：不启动界面，直接把结果打印出来。
+
+    本地调试用：python overlay.py --sync-only
+    """
+    from app_paths import DB_PATH as db_path
+
+    print(f"数据库: {db_path}")
+    remote = updater.fetch_remote(db_path)
+    if remote is None:
+        print("下载失败或远端不可用（详见日志）")
+        return 1
+
+    report = updater.merge(remote, db_path)
+    remote.unlink(missing_ok=True)
+
+    print(f"新增 {report.inserted} 条，配置更新 {report.meta_updated} 项，冲突 {len(report.conflicts)} 处")
+    if report.conflicts:
+        path = updater.write_conflicts(db_path, report.conflicts)
+        print(f"冲突已写入: {path}")
+        for conflict in report.conflicts[:10]:
+            print(
+                f"  seed={conflict.seed} {conflict.slot}: "
+                f"本地={conflict.local or '—'} 仓库={conflict.remote or '—'}"
+            )
+    return 0
+
+
 def _selftest() -> int:
     """无界面自检：给打包后的 exe 用，结果同时打印并写到 app 目录下。
 
@@ -932,6 +801,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())
+    if "--sync-only" in sys.argv:
+        raise SystemExit(_sync_only())
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)

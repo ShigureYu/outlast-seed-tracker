@@ -287,3 +287,19 @@ def ack_conflicts(db_path: Path, signature: str) -> None:
     state = _read_state(db_path)
     state["acked_conflicts"] = signature
     _write_state(db_path, state)
+
+
+def write_conflicts(db_path: Path, conflicts: list[Conflict]) -> Path:
+    """把冲突写到数据库旁边的 conflicts.txt，供用户自己核对。"""
+    path = db_path.with_name("conflicts.txt")
+    lines = [
+        f"# {datetime.now().isoformat(timespec='seconds')}  共 {len(conflicts)} 处与仓库不同（本地值未改动）"
+    ]
+    for conflict in conflicts:
+        lines.append(
+            f"{conflict.trial_id}\tseed={conflict.seed}\t{conflict.slot}\t"
+            f"本地={conflict.local or '—'}\t仓库={conflict.remote or '—'}"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    logger.info("冲突已写入 %s", path)
+    return path
