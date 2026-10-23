@@ -360,6 +360,8 @@ class Overlay(QWidget):
         self._last_key = key
         self._trial, self._seed = trial, seed
 
+        # 有意显示日志原文（如 58058），而不是还原后的 58：
+        # 排查问题时可以直接拿这个数去日志里搜，省掉心算 ×1001 的逆运算。
         self.seed_label.setText(f"Seed: {raw_seed or '--'}")
         self.hint.setText("")
         self._clear_body()
