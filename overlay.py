@@ -16,6 +16,7 @@ import logging
 import sys
 
 from PyQt6.QtCore import QPoint, QRegularExpression, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -58,6 +59,7 @@ from seed_lookup import describe_trial, read_codes, save_codes
 logger = logging.getLogger(__name__)
 
 POLL_MS = 60_000
+SERVER_NAME = "OPPOverlay-single-instance"
 WINDOW_WIDTH = 420
 BADGE_EXTRA_WIDTH = 60  # 测试库标记占用的额外宽度
 
@@ -836,6 +838,55 @@ class Overlay(QWidget):
             event.accept()
 
 
+def take_over_instance(app: QApplication) -> QLocalServer:
+    """保证只有一个实例：已经有一个在跑就请它退出，然后由本进程接管。
+
+    用本地套接字通知旧实例调用 close()，走的是正常退出流程
+    （停定时器、收线程、落数据库），比直接杀进程干净。
+    """
+    import time
+
+    probe = QLocalSocket()
+    probe.connectToServer(SERVER_NAME)
+    if probe.waitForConnected(500):
+        probe.write(b"quit")
+        probe.waitForBytesWritten(500)
+        probe.disconnectFromServer()
+        # 等旧实例自己走完退出流程，最多 1 秒
+        for _ in range(20):
+            app.processEvents()
+            time.sleep(0.05)
+            check = QLocalSocket()
+            check.connectToServer(SERVER_NAME)
+            connected = check.waitForConnected(80)
+            check.disconnectFromServer()
+            if not connected:
+                break
+
+    QLocalServer.removeServer(SERVER_NAME)
+    server = QLocalServer()
+    server.listen(SERVER_NAME)
+    return server
+
+
+def _wire_quit_signal(server: QLocalServer, window: "Overlay") -> None:
+    """收到其它实例的 quit 请求就让本实例退出。"""
+
+    def on_new_connection() -> None:
+        while server.hasPendingConnections():
+            conn = server.nextPendingConnection()
+            if conn is None:
+                continue
+            conn.waitForReadyRead(300)
+            message = bytes(conn.readAll()).strip()
+            conn.disconnectFromServer()
+            if message == b"quit":
+                logger.info("收到其它实例的退出请求")
+                window.close()
+
+    server.newConnection.connect(on_new_connection)
+
+
 def _selftest() -> int:
     """无界面自检：给打包后的 exe 用，结果同时打印并写到 app 目录下。
 
@@ -884,7 +935,9 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
+    server = take_over_instance(app)
     window = Overlay()
+    _wire_quit_signal(server, window)
     window.show()
     window.refresh(force=True)
 
