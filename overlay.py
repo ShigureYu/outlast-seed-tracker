@@ -60,8 +60,8 @@ logger = logging.getLogger(__name__)
 
 POLL_MS = 60_000
 SERVER_NAME = "OPPOverlay-single-instance"
-WINDOW_WIDTH = 420
-BADGE_EXTRA_WIDTH = 60  # 测试库标记占用的额外宽度
+MIN_WINDOW_WIDTH = 300
+MAX_WINDOW_WIDTH = 560
 
 STYLE = """
 QWidget {
@@ -224,8 +224,7 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("OPP Overlay")
         self._test_db = DB_PATH.name != DEFAULT_DB_NAME
-        # 测试库要额外放一个标记，给它留出宽度，正式库下窗口宽度不变
-        self.setFixedWidth(WINDOW_WIDTH + (BADGE_EXTRA_WIDTH if self._test_db else 0))
+        self.setMinimumWidth(MIN_WINDOW_WIDTH)
         self.setStyleSheet(STYLE)
 
         self._drag_offset: QPoint | None = None
@@ -324,9 +323,21 @@ class Overlay(QWidget):
         self.update_bar.setVisible(False)
         root.addWidget(self.update_bar)
 
+        # ---- 底部：折叠开关（左下角）----
+        bottom = QHBoxLayout()
+        self.collapse_button = ClickableLabel("折叠")
+        self.collapse_button.setObjectName("refresh")
+        self.collapse_button.setToolTip("只保留顶栏")
+        self.collapse_button.clicked.connect(self.toggle_collapse)
+        bottom.addWidget(self.collapse_button)
+        bottom.addStretch(1)
+        root.addLayout(bottom)
+
 
         self._worker = None
         self._editing_existing = False
+        self._code_length = 3
+        self._collapsed = False
 
         self.shortcut = QShortcut(QKeySequence("F5"), self)
         self.shortcut.activated.connect(lambda: self.refresh(force=True))
@@ -396,7 +407,7 @@ class Overlay(QWidget):
         if not info["slots"]:
             # 表存在但 meta 没登记任何列：只显示 Seed 和关卡名
             self._set_editing(False)
-            self._fit()
+            self._apply_collapsed()
             return
 
         codes = read_codes(seed, trial_id=trial)
@@ -440,7 +451,15 @@ class Overlay(QWidget):
         """
         self._inputs = {}
         slots = info["slots"]
+        code_length = int(info.get("code_length") or 3)
+        self._code_length = code_length
         per_row = 5  # 一行最多 5 个，超过就换行（比如以后某关有 7 个图案）
+        # 格子少于一行容量时居中显示，避免三个框被拉到整行宽
+        center = len(slots) == 1
+        offset = 1 if center else 0
+        if center:
+            self.grid.addWidget(QWidget(), 0, 0)
+            self.grid.setColumnStretch(0, 1)
 
         for index, (name, label) in enumerate(slots):
             tile = QWidget()
@@ -454,8 +473,8 @@ class Overlay(QWidget):
             caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             field = QLineEdit()
-            field.setMaxLength(3)
-            field.setFixedWidth(64)
+            field.setMaxLength(code_length)
+            field.setFixedWidth(64 if code_length > 1 else 76)
             field.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if readonly:
@@ -464,7 +483,9 @@ class Overlay(QWidget):
                 field.setText(values.get(name) or "—")
                 field.installEventFilter(self)  # 双击进入编辑
             else:
-                field.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,3}")))
+                field.setValidator(
+                    QRegularExpressionValidator(QRegularExpression(rf"\d{{0,{code_length}}}"))
+                )
                 field.setPlaceholderText("---")
                 field.setText(values.get(name) or "")
                 self._inputs[name] = field
@@ -473,17 +494,48 @@ class Overlay(QWidget):
             column.addWidget(field, 0, Qt.AlignmentFlag.AlignHCenter)
 
             self.grid.addWidget(
-                tile, index // per_row, index % per_row, Qt.AlignmentFlag.AlignHCenter
+                tile,
+                index // per_row,
+                index % per_row + offset,
+                Qt.AlignmentFlag.AlignHCenter,
             )
 
-        # 各列等宽平分，避免所有小格挤在左边
-        for column_index in range(min(per_row, len(slots))):
-            self.grid.setColumnStretch(column_index, 1)
+        if center:
+            self.grid.addWidget(QWidget(), 0, len(slots) + 1)
+            self.grid.setColumnStretch(len(slots) + 1, 1)
+        else:
+            # 刚好铺满一行时各列等宽平分
+            for column_index in range(min(per_row, len(slots))):
+                self.grid.setColumnStretch(column_index + offset, 1)
         self.grid.setHorizontalSpacing(2)
+
+    def _refit_width(self) -> None:
+        layout = self.layout()
+        if layout is None:
+            return
+        wanted = layout.sizeHint().width() + 4
+        width = max(MIN_WINDOW_WIDTH, min(MAX_WINDOW_WIDTH, wanted))
+        if width != self.width():
+            self.setFixedWidth(width)
+        self.adjustSize()
+
+    def toggle_collapse(self) -> None:
+        """折叠后只留顶栏，顶栏内容仍按原有规则渲染。"""
+        self._collapsed = not self._collapsed
+        self.collapse_button.setText("展开" if self._collapsed else "折叠")
+        self.collapse_button.setToolTip("恢复数据区" if self._collapsed else "只保留顶栏")
+        self._apply_collapsed()
+
+    def _apply_collapsed(self) -> None:
+        self.body.setVisible(not self._collapsed)
+        self.footer.setVisible(self._editing and not self._collapsed)
+        if self._collapsed:
+            self.update_bar.setVisible(False)
+        self._fit()
 
     def _set_editing(self, editing: bool) -> None:
         self._editing = editing
-        self.footer.setVisible(editing)
+        self.footer.setVisible(editing and not self._collapsed)
         if editing:
             first = next(iter(self._inputs.values()), None)
             if first is not None:
@@ -502,9 +554,14 @@ class Overlay(QWidget):
         if layout is not None:
             layout.invalidate()
             layout.activate()
+            # 宽度跟着内容走：格子少的关卡不会两边空一大截
+            wanted = layout.sizeHint().width() + 4
+            width = max(MIN_WINDOW_WIDTH, min(MAX_WINDOW_WIDTH, wanted))
+            if width != self.width():
+                self.setFixedWidth(width)
         self.adjustSize()
         self.update()
-        QTimer.singleShot(0, self.adjustSize)
+        QTimer.singleShot(0, self._refit_width)
 
     # ---------- 数据同步 ----------
     def sync_now(self) -> None:
@@ -590,6 +647,8 @@ class Overlay(QWidget):
 
     def cancel_edit(self) -> None:
         self._editing_existing = False
+        self._code_length = 3
+        self._collapsed = False
         self.hint.setText("")
         self.refresh(force=True)
 
@@ -601,8 +660,9 @@ class Overlay(QWidget):
         codes: dict[str, str | None] = {}
         for name, field in self._inputs.items():
             text = field.text().strip()
-            if text and len(text) != 3:
-                self.hint.setText(f"{name} 需要 3 位数字")
+            expected = self._code_length
+            if text and len(text) != expected:
+                self.hint.setText(f"{name} 需要 {expected} 位数字")
                 return
             codes[name] = text or None
 
@@ -618,6 +678,8 @@ class Overlay(QWidget):
             return
 
         self._editing_existing = False
+        self._code_length = 3
+        self._collapsed = False
         # 立刻按库里读回来的值重建，避免界面显示"看起来成功"的假象
         self.refresh(force=True)
         self.hint.setText("已保存")

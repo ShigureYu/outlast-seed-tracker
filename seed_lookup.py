@@ -65,7 +65,7 @@ def get_symbols(conn: sqlite3.Connection, trial_id: str) -> list[str]:
 def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
     """读关卡元信息。labels 是 JSON 串，调用方自己解析。"""
     columns = [row[1] for row in conn.execute(f"PRAGMA table_info(TRIAL_META)")]
-    wanted = [c for c in ("trial_id", "name_zh", "map_name", "labels") if c in columns]
+    wanted = [c for c in ("trial_id", "name_zh", "map_name", "labels", "code_length") if c in columns]
     row = conn.execute(
         f"SELECT {', '.join(wanted)} FROM TRIAL_META WHERE trial_id=?",
         (trial_id,),
@@ -78,6 +78,7 @@ def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
     meta.setdefault("name_zh", None)
     meta.setdefault("map_name", None)
     meta.setdefault("labels", None)
+    meta.setdefault("code_length", 3)
     return meta
 
 
@@ -200,6 +201,7 @@ def describe_trial(
         "map_name": meta["map_name"],
         # 没有映射就直接显示列名（英文），不为某一关写死兜底
         "slots": slots,
+        "code_length": int(meta.get("code_length") or 3),
     }
 
 
