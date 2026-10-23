@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -38,7 +39,13 @@ from PyQt6.QtWidgets import (
 )
 
 import updater
-from app_paths import DB_PATH, enable_utf8_stdout, ensure_database, load_config
+from app_paths import (
+    DB_PATH,
+    DEFAULT_DB_NAME,
+    enable_utf8_stdout,
+    ensure_database,
+    load_config,
+)
 from log_parser import (
     extract_seed_from_log,
     extract_trial_id_from_log,
@@ -106,6 +113,13 @@ QLabel#slot {
     font-size: 15px;
     font-weight: 600;
     color: #d8dbe2;
+}
+QLabel#badge {
+    font-size: 12px;
+    color: #ffcc66;
+    border: 1px solid rgba(255, 204, 102, 130);
+    border-radius: 4px;
+    padding: 0 6px;
 }
 QLabel#refresh {
     font-size: 15px;
@@ -242,6 +256,12 @@ class Overlay(QWidget):
         self.refresh_button.setToolTip("手动刷新（F5）")
         self.refresh_button.clicked.connect(lambda: self.refresh(force=True))
 
+        # 用的不是正式库时给个显眼标记，避免忘了自己在沙盒里
+        self.db_badge = QLabel("测试库")
+        self.db_badge.setObjectName("badge")
+        self.db_badge.setToolTip(f"当前数据库：{DB_PATH.name}")
+        self.db_badge.setVisible(DB_PATH.name != DEFAULT_DB_NAME)
+
         self.close_button = ClickableLabel("×")
         self.close_button.setObjectName("close")
         self.close_button.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -253,6 +273,7 @@ class Overlay(QWidget):
         top.addStretch(1)
         top.addWidget(self.trial_label)
         top.addStretch(1)
+        top.addWidget(self.db_badge)
         top.addWidget(self.refresh_button)
         top.addWidget(self.close_button)
         root.addLayout(top)
@@ -805,8 +826,18 @@ def _selftest() -> int:
 
 def main() -> None:
     enable_utf8_stdout()
-    if not ensure_database():
-        raise SystemExit("缺少 data/seed.db，且包内没有模板库")
+
+    try:
+        problem = None if ensure_database() else "缺少数据库，且包内没有模板库"
+    except SystemExit as exc:  # 配置指定的库不存在
+        problem = str(exc)
+
+    if problem:
+        if "--selftest" in sys.argv:
+            raise SystemExit(f"启动失败: {problem}")
+        app = QApplication(sys.argv[:1])
+        QMessageBox.critical(None, "启动失败", problem)
+        raise SystemExit(1)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())

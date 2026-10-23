@@ -76,6 +76,22 @@ def load_config() -> dict:
     return merged
 
 
+def declared_database() -> str | None:
+    """配置文件里是否明确写了 database。用于区分"默认值"和"用户指定"。
+
+    只在 config.json 存在且能解析、且确实带了 database 键时返回非 None。
+    """
+    try:
+        raw = CONFIG_PATH.read_text(encoding="utf-8-sig")
+        parsed = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get("database")
+    return str(value).strip() or None if value else None
+
+
 def _resolve_db_path() -> Path:
     override = os.environ.get("OPPOVERLAY_DB")
     if override:
@@ -99,6 +115,15 @@ def ensure_database() -> bool:
     """
     if DB_PATH.is_file():
         return True
+
+    # 用户明确指定了库名却不存在：多半是拼错了，报错比给他一个空库安全
+    explicit = bool(os.environ.get("OPPOVERLAY_DB")) or declared_database() is not None
+    if explicit:
+        raise SystemExit(
+            f"配置指定的数据库不存在: {DB_PATH}\n"
+            f"请检查 data/config.json 的 database 字段，或先创建该文件。"
+        )
+
     if not BUNDLED_DB.is_file() or BUNDLED_DB == DB_PATH:
         return False
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
