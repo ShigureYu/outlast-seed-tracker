@@ -494,7 +494,7 @@ class Overlay(QWidget):
 
             field = QLineEdit()
             field.setMaxLength(code_length)
-            field.setFixedWidth(64 if code_length > 1 else 76)
+            field.setFixedSize(64 if code_length > 1 else 76, 32)
             field.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if readonly:
