@@ -342,6 +342,8 @@ class Overlay(QWidget):
 
         self.shortcut = QShortcut(QKeySequence("F5"), self)
         self.shortcut.activated.connect(lambda: self.refresh(force=True))
+        self.force_save_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self.force_save_shortcut.activated.connect(self._force_save)
         self.sync_shortcut = QShortcut(QKeySequence("Ctrl+F5"), self)
         self.sync_shortcut.activated.connect(self.sync_now)
 
@@ -462,6 +464,7 @@ class Overlay(QWidget):
         """
         self._inputs = {}
         self._input_labels = {}
+        self._edit_snapshot = {name: (values.get(name) or "") for name, _ in info["slots"]}
         slots = info["slots"]
         code_length = int(info.get("code_length") or 3)
         self._code_length = code_length
@@ -500,6 +503,8 @@ class Overlay(QWidget):
                 )
                 field.setPlaceholderText("---")
                 field.setText(values.get(name) or "")
+                field.setProperty("slot", name)
+                field.installEventFilter(self)
                 self._inputs[name] = field
 
             self._input_labels[name] = label
@@ -549,6 +554,34 @@ class Overlay(QWidget):
         if self._collapsed:
             self.update_bar.setVisible(False)
         self._fit()
+
+    def _on_return(self, name: str) -> None:
+        """Enter：跳下一个框；最后一个框则在“填满且有改动”时保存。"""
+        names = list(self._inputs)
+        index = names.index(name)
+
+        if index < len(names) - 1:
+            self._inputs[names[index + 1]].setFocus()
+            return
+
+        filled = all(field.text().strip() for field in self._inputs.values())
+        changed = any(
+            field.text().strip() != self._edit_snapshot.get(key, "")
+            for key, field in self._inputs.items()
+        )
+        if filled and changed:
+            self.save()
+            return
+
+        # 没填满就回到第一个空框，不保存
+        empty = next((f for f in self._inputs.values() if not f.text().strip()), None)
+        if empty is not None:
+            empty.setFocus()
+
+    def _force_save(self) -> None:
+        """Ctrl+Enter：允许空值，用于清空某个字段的场景。"""
+        if self._editing:
+            self.save()
 
     def _set_hint(self, text: str, error: bool = False, auto_hide_ms: int = 3000) -> None:
         """提示文字：成功绿色、出错红色，几秒后自动消失。
@@ -682,10 +715,29 @@ class Overlay(QWidget):
 
     # ---------- 编辑 ----------
     def eventFilter(self, obj, event):
-        """只读态双击任意数字 -> 整条进入编辑。"""
+        """只读态双击进入编辑；编辑态用 空格/Enter 跳转或保存。"""
         if event.type() == QEvent.Type.MouseButtonDblClick and not self._editing:
             self.begin_edit()
             return True
+
+        if event.type() == QEvent.Type.KeyPress and self._editing:
+            name = obj.property("slot")
+            if name is None:
+                return super().eventFilter(obj, event)
+
+            key = event.key()
+            is_advance = key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space)
+            if not is_advance:
+                return super().eventFilter(obj, event)
+
+            # Ctrl+Enter / Ctrl+空格 = 强制保存（允许空值）
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self._force_save()
+                return True
+
+            self._on_return(str(name))
+            return True
+
         return super().eventFilter(obj, event)
 
     def begin_edit(self) -> None:
@@ -702,11 +754,6 @@ class Overlay(QWidget):
 
     def cancel_edit(self) -> None:
         self._editing_existing = False
-        self._code_length = 3
-        self._collapsed = False
-        self._input_labels: dict[str, str] = {}
-        self._hint_token = 0
-        self._log_stamp: tuple[int, int] | None = None
         self._set_hint("")
         self.refresh(force=True)
 
@@ -737,11 +784,6 @@ class Overlay(QWidget):
             return
 
         self._editing_existing = False
-        self._code_length = 3
-        self._collapsed = False
-        self._input_labels: dict[str, str] = {}
-        self._hint_token = 0
-        self._log_stamp: tuple[int, int] | None = None
         # 立刻按库里读回来的值重建，避免界面显示"看起来成功"的假象
         self.refresh(force=True)
         self._set_hint("已保存")
