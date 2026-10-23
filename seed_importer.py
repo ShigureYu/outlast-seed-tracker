@@ -41,7 +41,7 @@ NON_CJK_RE = re.compile(r"[^\u4e00-\u9fff]")
 
 @dataclass(frozen=True)
 class TrialSpec:
-    sheet: str
+    sheet: str | None  # None = 只建表登记结构，不导入数据
     trial_id: str
     name_zh: str
     map_name: str
@@ -81,6 +81,18 @@ TRIALS: tuple[TrialSpec, ...] = (
         ),
         code_length=1,
         split_from=1,  # xlsx 第 2 列是一个三位数，拆成三段
+    ),
+    TrialSpec(
+        sheet=None,  # 暂无数据表：只登记结构，让界面能录入
+        trial_id="MHS_MT01",
+        name_zh="清空保险库",
+        map_name="MobsterHideoutSyndicate",
+        columns=(
+            ("triangle", "三角形"),
+            ("skull", "骷髅"),
+            ("sun", "太阳"),
+        ),
+        code_length=1,
     ),
 )
 
@@ -198,7 +210,31 @@ def load_rows(spec: TrialSpec) -> tuple[list[tuple], list[tuple[int, int, str]]]
     return rows, gaps
 
 
+def register_only(conn: sqlite3.Connection, spec: TrialSpec) -> None:
+    """没有数据表时只建空表 + 写 meta，界面就能按标签渲染输入框。"""
+    ensure_table(conn, spec)
+    labels = {name: label for name, label in spec.columns}
+    conn.execute(
+        f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels, code_length) "
+        f"VALUES (?, ?, ?, ?, ?)",
+        (
+            spec.trial_id,
+            spec.name_zh,
+            spec.map_name,
+            json.dumps(labels, ensure_ascii=False),
+            spec.code_length,
+        ),
+    )
+    conn.commit()
+    total = conn.execute(f"SELECT COUNT(*) FROM {spec.trial_id}").fetchone()[0]
+    print(f"[{spec.trial_id}] {spec.name_zh}: 仅登记结构，表内现有 {total} 行")
+
+
 def import_trial(conn: sqlite3.Connection, spec: TrialSpec) -> None:
+    if spec.sheet is None:
+        register_only(conn, spec)
+        return
+
     rows, gaps = load_rows(spec)
 
     seen: dict[int, int] = {}
