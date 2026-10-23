@@ -44,7 +44,7 @@ DEFAULT_CONFIG = {
     "database": DEFAULT_DB_NAME,
     "poll_seconds": 60,
     "_help": {
-        "database": "答案库文件名（相对 data/ 目录）。测试可用 seed-local.db",
+        "database": "答案库文件名（相对 data/ 目录）。测试可用 seed_local.db",
         "poll_seconds": "扫描游戏日志的间隔秒数",
     },
 }

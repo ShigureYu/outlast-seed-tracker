@@ -20,7 +20,7 @@ data/seed.xlsx
 
 # 本地配置与测试库
 data/config.json
-data/seed-local.db
+data/seed_local.db
 
 # 发布产物（由 CI 生成，不进仓库）
 release/
