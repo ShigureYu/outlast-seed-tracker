@@ -131,17 +131,16 @@ def read_current_trial_id() -> str | None:
 
 
 def normalize_seed(raw: str | None) -> str | None:
-    """把日志里的原始 Seed 串还原成本项目种子表里的整数串。
+    """把日志里的原始 Seed 还原成种子表里的整数串。
 
-    这是**有意为之**的还原，不是截断事故：2026-10 抓到的全部日志中，
-    官方输出的都是同一个种子重复两遍（543 -> "543543"、815 -> "815815"）。
+    官方输出的是 `seed × 1001`（把种子拼在自己后面的十进制结果），所以：
 
-    注意不能用"取前 3 位"来实现：种子表里存在 1、80 这类不足三位的种子，
-    官方是否补零未经验证——补零会输出 "001001"，不补则输出 "11"。
-    所以这里改成"从中间对半拆开、验证两半相同"，两种写法都能还原。
+        860 -> "860860"    373 -> "373373"    58 -> "58058"    5 -> "5005"
 
-    兼容性：哪天官方换了输出规则，只改这个函数即可；
-    extract_seed_from_log 仍然返回原始串，read_current_seed 的调用方不用动。
+    不能再按"固定三位重复两遍"或"对半拆"来猜——两位数种子只有 5 位，
+    长度是奇数，拆半一定失败。用 ×1001 的逆运算对所有位数都成立。
+
+    兼容性：哪天官方换规则，只改这个函数即可。
     """
     if not raw:
         return None
@@ -151,16 +150,22 @@ def normalize_seed(raw: str | None) -> str | None:
         logger.warning("Seed 不是纯数字，无法还原: %r", raw)
         return None
 
-    if len(digits) % 2:
-        # 不像重复串，但也不至于丢数据：按原值处理并留一条警告
-        logger.warning("Seed 长度是奇数，不符合“重复两遍”的已知规则: %r", digits)
-        return str(int(digits))
+    value = int(digits)
 
-    half = len(digits) // 2
-    head, tail = digits[:half], digits[half:]
-    if head != tail:
-        logger.warning("Seed 两半不一致，按前半处理: %r", digits)
-    return str(int(head))
+    # 主规则：seed × 1001
+    if value > 0 and value % 1001 == 0:
+        seed = value // 1001
+        if 1 <= seed <= 999:
+            return str(seed)
+
+    # 兜底：偶数长度且两半相同（老日志里的写法）
+    if len(digits) % 2 == 0:
+        half = len(digits) // 2
+        if digits[:half] == digits[half:]:
+            return str(int(digits[:half]))
+
+    logger.warning("Seed 不符合已知规则（×1001），按原值处理: %r", digits)
+    return str(value)
 
 
 def read_current_seed() -> str | None:

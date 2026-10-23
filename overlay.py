@@ -777,6 +777,7 @@ def _selftest() -> int:
     window = Overlay()
     window.show()
     window.refresh(force=True)
+    app.processEvents()  # 让布局生效，否则量出来的是调整前的尺寸
 
     lines = [
         f"db: {DB_PATH}",
