@@ -820,6 +820,27 @@ class Overlay(QWidget):
         self._set_hint("已保存")
 
     # ---------- 窗口行为 ----------
+    def changeEvent(self, event) -> None:
+        """窗口激活状态变化时切换光标：失焦时让指针在面板上不可见。
+
+        游戏里指针是隐藏的，悬浮窗一旦显示默认箭头，看着就像多出来一个鼠标。
+        """
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange:
+            self._apply_cursor(self.isActiveWindow())
+
+    def _apply_cursor(self, active: bool) -> None:
+        self.setCursor(Qt.CursorShape.ArrowCursor if active else Qt.CursorShape.BlankCursor)
+        for widget in [self, *self.findChildren(QWidget)]:
+            if not active:
+                widget.setCursor(Qt.CursorShape.BlankCursor)
+            elif isinstance(widget, ClickableLabel):
+                widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            elif isinstance(widget, QLineEdit):
+                widget.setCursor(Qt.CursorShape.IBeamCursor)
+            else:
+                widget.setCursor(Qt.CursorShape.ArrowCursor)
+
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
