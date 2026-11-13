@@ -277,7 +277,8 @@ def register_trial_from_log(trial_id: str | None, map_name: str | None) -> bool:
 
     只插入、不更新：已有行原样保留，name_zh / labels / code_length
     都是人工维护字段，这里绝不覆盖。map_name 为空时直接跳过，
-    保证登记进来的行一定有地图名。失败只记日志，不打断界面刷新。
+    保证登记进来的行一定有地图名。name_zh 留 NULL 表示待人工填写。
+    失败只记日志，不打断界面刷新。
     """
     if not trial_id or not TABLE_RE.match(trial_id):
         logger.warning("Trial ID 不合法，跳过登记: %r", trial_id)
@@ -291,7 +292,7 @@ def register_trial_from_log(trial_id: str | None, map_name: str | None) -> bool:
             cursor = conn.execute(
                 """
                 INSERT INTO TRIAL_META (trial_id, name_zh, map_name, labels, code_length)
-                VALUES (?, '', ?, NULL, 0)
+                VALUES (?, NULL, ?, NULL, 0)
                 ON CONFLICT(trial_id) DO NOTHING
                 """,
                 (trial_id, map_name),
