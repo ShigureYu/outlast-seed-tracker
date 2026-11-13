@@ -13,10 +13,18 @@
 - 表名一律用 Trial ID（大写），列名 ASCII。
 - 码值一律 TEXT，保住 '014' 这种前导零。
 - 源表缺格/脏格存 NULL，不整行丢弃。
+
+用法：
+
+    python seed_importer.py                    # 导入全部关卡
+    python seed_importer.py CHJ_MT02 RES_MT01  # 只处理指定关卡
+    python seed_importer.py --list             # 列出已配置的关卡
+    python seed_importer.py --register-only    # 不读 xlsx，只建表并写 TRIAL_META
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import re
@@ -114,13 +122,16 @@ def _normalize_seed(raw: object) -> int | None:
 
 def _parse_codes(spec: TrialSpec, row: tuple) -> list[str | None]:
     """从一行里取出该关所有码值；不合法/缺失的位置返回 None。"""
+    width = len(spec.columns)
     if spec.split_from is None:
-        width = len(spec.columns)
-        raw_values = row[1 : 1 + width]
+        # 行可能比表头短，缺的位置按 None 处理
+        raw_values = list(row[1 : 1 + width])
+        raw_values += [None] * (width - len(raw_values))
     else:
+        if spec.split_from >= len(row):
+            return [None] * width
         joined = row[spec.split_from]
         text = str(joined).strip() if joined is not None else ""
-        width = len(spec.columns)
         # 合并码必须正好是 width 位数字，否则整行不拆
         raw_values = list(text) if re.fullmatch(rf"\d{{{width}}}", text) else [None] * width
 
@@ -135,9 +146,9 @@ def create_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {META_TABLE} (
-            trial_id    TEXT PRIMARY KEY,
-            name_zh     TEXT NOT NULL,
-            map_name    TEXT,
+            trial_id    TEXT PRIMARY KEY NOT NULL,
+            name_zh     TEXT,
+            map_name    TEXT NOT NULL,
             labels      TEXT,
             code_length INTEGER DEFAULT 3
         )
@@ -162,14 +173,37 @@ def ensure_table(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {spec.trial_id} (
-            seed INTEGER PRIMARY KEY,
+            seed INTEGER PRIMARY KEY NOT NULL,
             {definition},
             updated_at TEXT
         )
         """
     )
-    if "updated_at" not in _table_columns(conn, spec.trial_id):
+
+    # 表可能是旧版本建的：补齐后来新增的列，避免导入/录入时报缺列
+    columns = _table_columns(conn, spec.trial_id)
+    if "updated_at" not in columns:
         conn.execute(f"ALTER TABLE {spec.trial_id} ADD COLUMN updated_at TEXT")
+        columns.append("updated_at")
+    for name in spec.column_names:
+        if name not in columns:
+            logger.info("[%s] 补列 %s", spec.trial_id, name)
+            conn.execute(f"ALTER TABLE {spec.trial_id} ADD COLUMN {name} TEXT")
+
+
+def _write_meta(conn: sqlite3.Connection, spec: TrialSpec) -> None:
+    labels = {name: label for name, label in spec.columns}
+    conn.execute(
+        f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels, code_length) "
+        f"VALUES (?, ?, ?, ?, ?)",
+        (
+            spec.trial_id,
+            spec.name_zh,
+            spec.map_name,
+            json.dumps(labels, ensure_ascii=False),
+            spec.code_length,
+        ),
+    )
 
 
 def load_rows(spec: TrialSpec) -> tuple[list[tuple], list[tuple[int, int, str]]]:
@@ -187,7 +221,7 @@ def load_rows(spec: TrialSpec) -> tuple[list[tuple], list[tuple[int, int, str]]]
         if index == 1:
             logger.info("[%s] 表头: %s", spec.sheet, [c for c in row if c is not None])
             continue
-        if row is None or row[0] is None:
+        if not row or row[0] is None:
             continue
 
         seed = _normalize_seed(row[0])
@@ -213,18 +247,7 @@ def load_rows(spec: TrialSpec) -> tuple[list[tuple], list[tuple[int, int, str]]]
 def register_only(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     """没有数据表时只建空表 + 写 meta，界面就能按标签渲染输入框。"""
     ensure_table(conn, spec)
-    labels = {name: label for name, label in spec.columns}
-    conn.execute(
-        f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels, code_length) "
-        f"VALUES (?, ?, ?, ?, ?)",
-        (
-            spec.trial_id,
-            spec.name_zh,
-            spec.map_name,
-            json.dumps(labels, ensure_ascii=False),
-            spec.code_length,
-        ),
-    )
+    _write_meta(conn, spec)
     conn.commit()
     total = conn.execute(f"SELECT COUNT(*) FROM {spec.trial_id}").fetchone()[0]
     print(f"[{spec.trial_id}] {spec.name_zh}: 仅登记结构，表内现有 {total} 行")
@@ -245,18 +268,7 @@ def import_trial(conn: sqlite3.Connection, spec: TrialSpec) -> None:
         logger.warning("[%s] 有 %d 个 seed 重复: %s", spec.trial_id, len(duplicated), duplicated[:10])
 
     ensure_table(conn, spec)
-    labels = {name: label for name, label in spec.columns}
-    conn.execute(
-        f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels, code_length) "
-        f"VALUES (?, ?, ?, ?, ?)",
-        (
-            spec.trial_id,
-            spec.name_zh,
-            spec.map_name,
-            json.dumps(labels, ensure_ascii=False),
-            spec.code_length,
-        ),
-    )
+    _write_meta(conn, spec)
     conn.executemany(
         f"INSERT OR REPLACE INTO {spec.trial_id} (seed, {', '.join(spec.column_names)}) "
         f"VALUES ({', '.join('?' * (len(spec.columns) + 1))})",
@@ -278,14 +290,30 @@ def import_trial(conn: sqlite3.Connection, spec: TrialSpec) -> None:
         print(f"  第 {index} 行 seed={seed} 存为 NULL: {reason}")
 
 
-def import_all() -> None:
-    if not XLSX_PATH.is_file():
-        raise SystemExit(f"找不到表格: {XLSX_PATH}")
+def _select(ids: list[str]) -> tuple[TrialSpec, ...]:
+    """按命令行给的 Trial ID 过滤；留空表示全部。"""
+    if not ids:
+        return TRIALS
+    wanted = {value.strip().upper() for value in ids}
+    by_id = {spec.trial_id: spec for spec in TRIALS}
+    unknown = sorted(wanted - by_id.keys())
+    if unknown:
+        raise SystemExit(f"未知 Trial ID: {', '.join(unknown)}（用 --list 查看已配置关卡）")
+    return tuple(spec for spec in TRIALS if spec.trial_id in wanted)
+
+
+def import_all(ids: list[str] | None = None, structure_only: bool = False) -> None:
+    specs = _select(ids or [])
+    if not structure_only and any(spec.sheet for spec in specs) and not XLSX_PATH.is_file():
+        raise SystemExit(f"找不到表格: {XLSX_PATH}（只想建表可加 --register-only）")
 
     with closing(sqlite3.connect(DB_PATH)) as conn:
         create_schema(conn)
-        for spec in TRIALS:
-            import_trial(conn, spec)
+        for spec in specs:
+            if structure_only:
+                register_only(conn, spec)
+            else:
+                import_trial(conn, spec)
 
     print(f"数据库: {DB_PATH}")
 
@@ -293,7 +321,26 @@ def import_all() -> None:
 def main() -> None:
     enable_utf8_stdout()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    import_all()
+
+    parser = argparse.ArgumentParser(description="从 seed.xlsx 导入答案表")
+    parser.add_argument("trial_ids", nargs="*", help="只处理指定 Trial ID；留空表示全部")
+    parser.add_argument("--list", action="store_true", help="列出已配置的关卡")
+    parser.add_argument(
+        "--register-only",
+        action="store_true",
+        help="不读 xlsx，只建表并写 TRIAL_META",
+    )
+    args = parser.parse_args()
+
+    if args.list:
+        for spec in TRIALS:
+            print(
+                f"{spec.trial_id:12} {spec.name_zh:10} {spec.map_name:22} "
+                f"sheet={spec.sheet or '-':10} 列={len(spec.columns)} 码长={spec.code_length}"
+            )
+        return
+
+    import_all(args.trial_ids, structure_only=args.register_only)
 
 
 if __name__ == "__main__":
