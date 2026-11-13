@@ -24,6 +24,7 @@ SEED_PATTERN = re.compile(r"Seed:\s*(\d+)")
 TRIAL_PATTERN = re.compile(r"Trial ID:\s*([A-Za-z0-9_]+)")
 # 同一行里同时有 Trial ID 和 Seed，优先用它，避免两者来自不同阶段
 STATE_PATTERN = re.compile(r"Trial ID:\s*([A-Za-z0-9_]+).{0,300}?Seed:\s*(\d+)")
+STAGE_PATTERN = re.compile(r"Stage:\s*([A-Za-z0-9_]+)")
 TRIAL_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
 
 
@@ -176,19 +177,19 @@ def read_current_seed() -> str | None:
     return normalize_seed(extract_seed_from_log(log_file))
 
 
-def read_current_state() -> tuple[str | None, str | None]:
-    """一次读取文件，同时返回 (trial_id, seed)。UI 刷新按钮用这个最省事。
+def read_game_state() -> tuple[str | None, str | None, str | None]:
+    """一次整读日志，返回 (原始 Trial ID, 原始 Seed, Stage)。
 
-    优先取"最后一条同时含 Trial ID 和 Seed 的行"，保证两者属于同一局；
-    日志格式若变了导致找不到这种行，再退回各取最后一次出现。
+    三个值都保持日志原样；Stage 取自最后一条含 Trial ID 的行，
+    供登记 TRIAL_META.map_name 用。日志里没有 Stage 时返回 None。
     """
     log_file = find_latest_log()
     if log_file is None:
-        return None, None
+        return None, None, None
 
     text = _read_log_text(log_file)
     if text is None:
-        return None, None
+        return None, None, None
 
     pairs = STATE_PATTERN.findall(text)
     if pairs:
@@ -200,6 +201,26 @@ def read_current_state() -> tuple[str | None, str | None]:
         trial_raw = trial_matches[-1] if trial_matches else None
         seed_raw = seed_matches[-1] if seed_matches else None
 
+    # Stage 和 Trial ID 通常在同一行；只从最后一条含 Trial ID 的行里取，
+    # 免得日志跨了多局时拿到别的关卡的地图名。
+    stage = None
+    for line in reversed(text.splitlines()):
+        if TRIAL_PATTERN.search(line) is None:
+            continue
+        match = STAGE_PATTERN.search(line)
+        stage = match.group(1) if match else None
+        break
+
+    return trial_raw, seed_raw, stage
+
+
+def read_current_state() -> tuple[str | None, str | None]:
+    """一次读取文件，同时返回 (trial_id, seed)。UI 刷新按钮用这个最省事。
+
+    优先取"最后一条同时含 Trial ID 和 Seed 的行"，保证两者属于同一局；
+    日志格式若变了导致找不到这种行，再退回各取最后一次出现。
+    """
+    trial_raw, seed_raw, _ = read_game_state()
     return normalize_trial_id(trial_raw), normalize_seed(seed_raw)
 
 

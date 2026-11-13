@@ -167,7 +167,7 @@ def describe_trial(
     trial_id: str | None = None,
     db_path: Path | str = DB_PATH,
 ) -> dict | None:
-    """返回一关的展示信息；库里没有这张表就返回 None（对应"无表状态"）。
+    """返回一关的展示信息；答案表不存在时 slots 为空，但仍返回 meta 信息。
 
     形如：
         {'trial_id': 'CHJ_MT02', 'name_zh': '被告判决',
@@ -181,19 +181,22 @@ def describe_trial(
     with closing(_connect(db_path)) as conn:
         try:
             _check_trial(conn, trial)
+            has_table = True
         except ValueError:
-            return None
-        symbols = get_symbols(conn, trial)
+            has_table = False
+        symbols = get_symbols(conn, trial) if has_table else []
         meta = get_trial_meta(conn, trial)
 
     labels = _parse_labels(meta.get("labels"))
     # 渲染什么、按什么顺序，完全由 labels 决定。
     # 键在表里没有对应列时**依然渲染**（值显示为“—”），
     # 这样“这列应该有数据但没有”能一眼看出来，而不是被静默跳过。
-    slots = list(labels.items())
-    missing = [name for name in labels if name not in symbols]
-    if missing:
-        logger.warning("labels 里这些键在表 %s 中不存在，界面会显示为缺值: %s", trial, missing)
+    # 没有答案表时先不渲染格子，只把 meta 交给界面（顶栏显示地图名）。
+    slots = list(labels.items()) if has_table else []
+    if has_table:
+        missing = [name for name in labels if name not in symbols]
+        if missing:
+            logger.warning("labels 里这些键在表 %s 中不存在，界面会显示为缺值: %s", trial, missing)
 
     return {
         "trial_id": trial,
@@ -201,6 +204,7 @@ def describe_trial(
         "map_name": meta["map_name"],
         # 没有映射就直接显示列名（英文），不为某一关写死兜底
         "slots": slots,
+        "has_table": has_table,
         "code_length": int(meta.get("code_length") or 3),
     }
 
@@ -266,6 +270,37 @@ def save_codes(
             params,
         )
         conn.commit()
+
+
+def register_trial_from_log(trial_id: str | None, map_name: str | None) -> bool:
+    """把日志里新出现的关卡登记到 TRIAL_META，返回是否真的插入了新行。
+
+    只插入、不更新：已有行原样保留，name_zh / labels / code_length
+    都是人工维护字段，这里绝不覆盖。map_name 为空时直接跳过，
+    保证登记进来的行一定有地图名。失败只记日志，不打断界面刷新。
+    """
+    if not trial_id or not TABLE_RE.match(trial_id):
+        logger.warning("Trial ID 不合法，跳过登记: %r", trial_id)
+        return False
+    if not map_name:
+        logger.info("日志里没有 Stage，跳过登记: %s", trial_id)
+        return False
+
+    try:
+        with closing(_connect()) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO TRIAL_META (trial_id, name_zh, map_name, labels, code_length)
+                VALUES (?, '', ?, NULL, 0)
+                ON CONFLICT(trial_id) DO NOTHING
+                """,
+                (trial_id, map_name),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("登记 TRIAL_META 失败 %s: %s", trial_id, exc)
+        return False
 
 
 def _print_result(

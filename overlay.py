@@ -48,13 +48,12 @@ from app_paths import (
     load_config,
 )
 from log_parser import (
-    extract_seed_from_log,
-    extract_trial_id_from_log,
     find_latest_log,
     normalize_seed,
     normalize_trial_id,
+    read_game_state,
 )
-from seed_lookup import describe_trial, read_codes, save_codes
+from seed_lookup import describe_trial, read_codes, register_trial_from_log, save_codes
 
 logger = logging.getLogger(__name__)
 
@@ -361,12 +360,9 @@ class Overlay(QWidget):
 
     # ---------- 日志 ----------
     @staticmethod
-    def _read_log() -> tuple[str | None, str | None]:
-        """返回 (原始 Trial ID, 原始 Seed)，都保持日志里的原样。"""
-        log_file = find_latest_log()
-        if log_file is None:
-            return None, None
-        return extract_trial_id_from_log(log_file), extract_seed_from_log(log_file)
+    def _read_log() -> tuple[str | None, str | None, str | None]:
+        """一次读日志，返回 (原始 Trial ID, 原始 Seed, Stage)。"""
+        return read_game_state()
 
     # ---------- 刷新 ----------
     def _poll(self) -> None:
@@ -387,7 +383,7 @@ class Overlay(QWidget):
         self.refresh()
 
     def refresh(self, force: bool = False) -> None:
-        raw_trial, raw_seed = self._read_log()
+        raw_trial, raw_seed, map_name = self._read_log()
         trial = normalize_trial_id(raw_trial)
         seed = normalize_seed(raw_seed)
         key = (trial, seed)
@@ -396,6 +392,10 @@ class Overlay(QWidget):
             return
         self._last_key = key
         self._trial, self._seed = trial, seed
+
+        # 日志里新出现的关卡先登记到 TRIAL_META（只插不改）。
+        # 放在 describe_trial 之前，这次刷新就能把地图名显示出来。
+        register_trial_from_log(trial, map_name)
 
         # 有意显示日志原文（如 58058），而不是还原后的 58：
         # 排查问题时可以直接拿这个数去日志里搜，省掉心算 ×1001 的逆运算。
@@ -413,17 +413,18 @@ class Overlay(QWidget):
 
         info = describe_trial(trial) if trial else None
         if info is None:
-            # 状态 A：库里没有这张表
+            # 状态 A：拿不到关卡信息
             self._set_trial_text("")
             self._set_editing(False)
             self.body.setVisible(False)
             self._fit()
             return
 
-        self._set_trial_text(info["name_zh"] or info["trial_id"])
+        # 中文名还没录入时退到地图名，至少能看出是哪一关
+        self._set_trial_text(info["name_zh"] or info["map_name"] or info["trial_id"])
 
         if not info["slots"]:
-            # 表存在但 meta 没登记任何列：只显示 Seed 和关卡名
+            # 没有答案表或 meta 没登记任何列：只显示 Seed 和关卡名
             self._set_editing(False)
             self._apply_collapsed()
             return
