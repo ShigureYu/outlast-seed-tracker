@@ -56,6 +56,7 @@ class TrialSpec:
     columns: tuple[tuple[str, str], ...]  # (列名, 显示名)
     code_length: int = 3
     split_from: int | None = None  # 非空时表示：这一列是合并码，需要拆开
+    choices: dict[str, str] | None = None  # 图案模式：数字字符 -> 显示名
 
     @property
     def column_names(self) -> tuple[str, ...]:
@@ -101,6 +102,30 @@ TRIALS: tuple[TrialSpec, ...] = (
             ("sun", "太阳/五角星"),
         ),
         code_length=3,
+    ),
+    TrialSpec(
+        sheet=None,  # 数据来自游戏内录入，不走 xlsx
+        trial_id="FPI_MT01",
+        name_zh="蛊惑孩童",
+        map_name="FunParkIllusion",
+        columns=(
+            ("one", "第1位"),
+            ("two", "第2位"),
+            ("three", "第3位"),
+            ("four", "第4位"),
+        ),
+        code_length=1,
+        choices={
+            "1": "兔子",
+            "2": "梅花",
+            "3": "皇冠",
+            "4": "方块",
+            "5": "眼睛",
+            "6": "火焰",
+            "7": "爱心",
+            "8": "月亮",
+            "9": "黑桃",
+        },
     ),
 )
 
@@ -150,7 +175,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             name_zh     TEXT,
             map_name    TEXT NOT NULL,
             labels      TEXT,
-            code_length INTEGER DEFAULT 3
+            code_length INTEGER DEFAULT 3,
+            choices     TEXT
         )
         """
     )
@@ -159,6 +185,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN labels TEXT")
     if "code_length" not in meta_columns:
         conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN code_length INTEGER DEFAULT 3")
+    if "choices" not in meta_columns:
+        conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN choices TEXT")
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -193,15 +221,18 @@ def ensure_table(conn: sqlite3.Connection, spec: TrialSpec) -> None:
 
 def _write_meta(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     labels = {name: label for name, label in spec.columns}
+    choices = json.dumps(spec.choices, ensure_ascii=False) if spec.choices else None
     conn.execute(
-        f"INSERT OR REPLACE INTO {META_TABLE} (trial_id, name_zh, map_name, labels, code_length) "
-        f"VALUES (?, ?, ?, ?, ?)",
+        f"INSERT OR REPLACE INTO {META_TABLE} "
+        f"(trial_id, name_zh, map_name, labels, code_length, choices) "
+        f"VALUES (?, ?, ?, ?, ?, ?)",
         (
             spec.trial_id,
             spec.name_zh,
             spec.map_name,
             json.dumps(labels, ensure_ascii=False),
             spec.code_length,
+            choices,
         ),
     )
 

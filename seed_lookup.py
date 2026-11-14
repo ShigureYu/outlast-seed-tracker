@@ -65,7 +65,11 @@ def get_symbols(conn: sqlite3.Connection, trial_id: str) -> list[str]:
 def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
     """读关卡元信息。labels 是 JSON 串，调用方自己解析。"""
     columns = [row[1] for row in conn.execute(f"PRAGMA table_info(TRIAL_META)")]
-    wanted = [c for c in ("trial_id", "name_zh", "map_name", "labels", "code_length") if c in columns]
+    wanted = [
+        c
+        for c in ("trial_id", "name_zh", "map_name", "labels", "code_length", "choices")
+        if c in columns
+    ]
     row = conn.execute(
         f"SELECT {', '.join(wanted)} FROM TRIAL_META WHERE trial_id=?",
         (trial_id,),
@@ -79,6 +83,7 @@ def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
     meta.setdefault("map_name", None)
     meta.setdefault("labels", None)
     meta.setdefault("code_length", 3)
+    meta.setdefault("choices", None)
     return meta
 
 
@@ -163,6 +168,23 @@ def _parse_labels(raw: str | None) -> dict[str, str]:
     return {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
 
 
+def _parse_choices(raw: str | None) -> dict[str, str]:
+    """解析 TRIAL_META.choices 里的 JSON；坏数据按"没有配置"处理。
+
+    形如 {"1": "兔子", "2": "梅花", ...}，键是存进答案表的单个数字字符。
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("TRIAL_META.choices 不是合法 JSON: %r", raw)
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items()}
+
+
 def describe_trial(
     trial_id: str | None = None,
     db_path: Path | str = DB_PATH,
@@ -188,6 +210,7 @@ def describe_trial(
         meta = get_trial_meta(conn, trial)
 
     labels = _parse_labels(meta.get("labels"))
+    choices = _parse_choices(meta.get("choices"))
     # 渲染什么、按什么顺序，完全由 labels 决定。
     # 键在表里没有对应列时**依然渲染**（值显示为“—”），
     # 这样“这列应该有数据但没有”能一眼看出来，而不是被静默跳过。
@@ -205,6 +228,7 @@ def describe_trial(
         # 没有映射就直接显示列名（英文），不为某一关写死兜底
         "slots": slots,
         "has_table": has_table,
+        "choices": choices,
         "code_length": int(meta.get("code_length") or 3),
     }
 

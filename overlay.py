@@ -27,6 +27,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -166,6 +167,47 @@ QPushButton:hover {
 QPushButton:disabled {
     color: rgba(255, 255, 255, 90);
 }
+QLabel#choiceView {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #7ebf96;
+}
+QPushButton#choiceSlot {
+    background: rgba(255, 255, 255, 26);
+    border: 1px solid rgba(255, 255, 255, 46);
+    border-radius: 5px;
+    padding: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #e9e9ec;
+}
+QPushButton#choiceSlot:hover {
+    background: rgba(255, 255, 255, 46);
+    border-color: rgba(255, 255, 255, 90);
+}
+QFrame#choicePopup {
+    background: #1b1b20;
+    border: 1px solid rgba(255, 255, 255, 70);
+    border-radius: 8px;
+}
+QPushButton#choiceItem {
+    background: rgba(255, 255, 255, 30);
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 0;
+    font-size: 15px;
+    color: #e9e9ec;
+}
+QPushButton#choiceItem:hover {
+    background: rgba(255, 255, 255, 60);
+}
+QPushButton#choiceItem[selected="true"] {
+    border-color: #8fe3a0;
+    color: #8fe3a0;
+}
 """
 
 
@@ -211,6 +253,67 @@ class UpdateWorker(QThread):
         self.done.emit(report)
 
 
+class ChoicePopup(QFrame):
+    """3×3 图案选择面板：点击或按数字 1-9 选中，Esc 关闭。"""
+
+    chosen = pyqtSignal(str)
+
+    def __init__(self, choices: dict[str, str], current: str | None, parent=None) -> None:
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName("choicePopup")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._buttons: dict[str, QPushButton] = {}
+        grid = QGridLayout(self)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setSpacing(4)
+        for index, (digit, label) in enumerate(choices.items()):
+            button = QPushButton(label)
+            button.setObjectName("choiceItem")
+            button.setFixedSize(84, 32)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _=False, d=digit: self._choose(d))
+            grid.addWidget(button, index // 3, index % 3)
+            self._buttons[digit] = button
+        if current in self._buttons:
+            self._buttons[current].setProperty("selected", "true")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def _choose(self, digit: str) -> None:
+        self.chosen.emit(digit)
+        self.close()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+            return
+        text = event.text()
+        if text in self._buttons:
+            self._choose(text)
+            return
+        super().keyPressEvent(event)
+
+    def show_near(self, anchor: QWidget) -> None:
+        """优先显示在按钮下方；贴近屏幕边缘时上翻/左右收进屏幕。"""
+        self.adjustSize()
+        top_left = anchor.mapToGlobal(QPoint(0, 0))
+        pos = QPoint(
+            top_left.x() + anchor.width() // 2 - self.width() // 2,
+            top_left.y() + anchor.height() + 4,
+        )
+        screen = anchor.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            if pos.x() + self.width() > area.right():
+                pos.setX(area.right() - self.width())
+            if pos.x() < area.left():
+                pos.setX(area.left())
+            if pos.y() + self.height() > area.bottom():
+                pos.setY(top_left.y() - self.height() - 4)
+        self.move(pos)
+        self.show()
+        self.setFocus()
+
+
 class Overlay(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -234,7 +337,9 @@ class Overlay(QWidget):
 
         self._trial: str | None = None
         self._seed: str | None = None
-        self._inputs: dict[str, QLineEdit] = {}
+        self._inputs: dict[str, QWidget] = {}
+        self._choices: dict[str, str] = {}
+        self._picker: ChoicePopup | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
@@ -447,6 +552,9 @@ class Overlay(QWidget):
         self.trial_label.setVisible(bool(text))
 
     def _clear_body(self) -> None:
+        if self._picker is not None:
+            self._picker.close()
+            self._picker = None
         while self.grid.count():
             item = self.grid.takeAt(0)
             widget = item.widget()
@@ -463,14 +571,15 @@ class Overlay(QWidget):
         values: dict[str, str | None],
         readonly: bool = False,
     ) -> None:
-        """每个图案一个小格：名字在上、数字在下，横向排布。
+        """每个图案一个小格：名字在上、值在下，横向排布。
 
-        以前是"名字贴左、数字贴右"两列布局，420px 宽度里中间空一大截，
-        眼睛要来回扫；竖排之后名字和数字天然对齐。
+        普通关卡值是数字输入框；配置了 choices 的关卡，只读时显示图案名，
+        编辑时显示按钮，点开是 3×3 图案面板。
         """
         self._inputs = {}
         self._input_labels = {}
-        self._edit_snapshot = {name: (values.get(name) or "") for name, _ in info["slots"]}
+        self._choices = info.get("choices") or {}
+        self._edit_snapshot = {}
         slots = info["slots"]
         code_length = int(info.get("code_length") or 3)
         self._code_length = code_length
@@ -493,26 +602,32 @@ class Overlay(QWidget):
             caption.setObjectName("slot")
             caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            field = QLineEdit()
-            field.setMaxLength(code_length)
-            field.setFixedSize(64 if code_length > 1 else 76, 32)
-            field.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            if readonly:
-                field.setReadOnly(True)
-                field.setProperty("readOnly", "true")
-                field.setText(values.get(name) or "—")
-                field.installEventFilter(self)  # 双击进入编辑
+            value = values.get(name)
+            if self._choices:
+                field = self._make_choice_widget(name, value, readonly)
             else:
-                field.setValidator(
-                    QRegularExpressionValidator(QRegularExpression(rf"\d{{0,{code_length}}}"))
-                )
-                field.setPlaceholderText("---")
-                field.setText(values.get(name) or "")
-                field.setProperty("slot", name)
-                field.installEventFilter(self)
-                self._inputs[name] = field
+                field = QLineEdit()
+                field.setMaxLength(code_length)
+                field.setFixedSize(64 if code_length > 1 else 76, 32)
+                field.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+                if readonly:
+                    field.setReadOnly(True)
+                    field.setProperty("readOnly", "true")
+                    field.setText(value or "—")
+                    field.installEventFilter(self)  # 双击进入编辑
+                else:
+                    field.setValidator(
+                        QRegularExpressionValidator(QRegularExpression(rf"\d{{0,{code_length}}}"))
+                    )
+                    field.setPlaceholderText("---")
+                    field.setText(value or "")
+                    field.setProperty("slot", name)
+                    field.installEventFilter(self)
+
+            if not readonly:
+                self._inputs[name] = field
+            self._edit_snapshot[name] = self._slot_value(field)
             self._input_labels[name] = label
             column.addWidget(caption)
             column.addWidget(field, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -536,6 +651,76 @@ class Overlay(QWidget):
             for column_index in range(min(per_row, len(slots))):
                 self.grid.setColumnStretch(column_index + offset, 1)
         self.grid.setHorizontalSpacing(2)
+
+    def _make_choice_widget(self, name: str, value, readonly: bool) -> QWidget:
+        """图案关卡的一个格子：只读是标签，编辑是可点开的按钮。"""
+        digit = str(value) if value else ""
+        text = self._choices.get(digit)
+        widget: QWidget
+        if readonly:
+            label = QLabel(text or "—")
+            label.setObjectName("choiceView")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setFixedSize(88, 32)
+            label.setProperty("slot", name)
+            label.setProperty("digit", digit)
+            label.setToolTip(f"{name} = {digit or '—'}")
+            label.installEventFilter(self)  # 双击进入编辑
+            widget = label
+        else:
+            button = QPushButton(text or "请选择")
+            button.setObjectName("choiceSlot")
+            button.setFixedSize(88, 32)
+            button.setProperty("slot", name)
+            button.setProperty("digit", digit)
+            button.setToolTip(f"{name}：点击选择图案")
+            button.clicked.connect(lambda _=False, n=name: self._open_picker(n))
+            button.installEventFilter(self)
+            widget = button
+        return widget
+
+    def _slot_value(self, widget: QWidget) -> str:
+        """取一个格子的当前值：图案按钮取 digit，普通输入框取文本。"""
+        if isinstance(widget, QPushButton):
+            return str(widget.property("digit") or "")
+        if isinstance(widget, QLabel):
+            return str(widget.property("digit") or "")
+        return widget.text().strip()  # type: ignore[attr-defined]
+
+    def _is_changed(self) -> bool:
+        return any(
+            self._slot_value(widget) != self._edit_snapshot.get(name, "")
+            for name, widget in self._inputs.items()
+        )
+
+    def _open_picker(self, name: str) -> None:
+        anchor = self._inputs.get(name)
+        if anchor is None or not self._choices:
+            return
+        if self._picker is not None:
+            self._picker.close()
+        self._picker = ChoicePopup(self._choices, str(anchor.property("digit") or ""), self)
+        self._picker.chosen.connect(lambda digit, n=name: self._pick_digit(n, digit))
+        self._picker.show_near(anchor)
+
+    def _pick_digit(self, name: str, digit: str) -> None:
+        widget = self._inputs.get(name)
+        if widget is None:
+            return
+        widget.setProperty("digit", digit)
+        if isinstance(widget, QPushButton):
+            widget.setText(self._choices.get(digit, digit))
+        if self._picker is not None:
+            self._picker = None
+
+        names = list(self._inputs)
+        index = names.index(name)
+        if index < len(names) - 1:
+            self._inputs[names[index + 1]].setFocus()
+            return
+        # 最后一个位置选完：全部有值且有改动时直接保存，和 Enter 的行为一致
+        if all(self._slot_value(widget) for widget in self._inputs.values()) and self._is_changed():
+            self.save()
 
     def _refit_width(self) -> None:
         layout = self.layout()
@@ -584,7 +769,11 @@ class Overlay(QWidget):
         QTimer.singleShot(0, self._fit)
 
     def _on_return(self, name: str) -> None:
-        """Enter：跳下一个框；最后一个框则在“填满且有改动”时保存。"""
+        """Enter：普通关卡跳下一个框；图案关卡打开选择面板。"""
+        if self._choices:
+            self._open_picker(name)
+            return
+
         names = list(self._inputs)
         index = names.index(name)
 
@@ -592,17 +781,13 @@ class Overlay(QWidget):
             self._inputs[names[index + 1]].setFocus()
             return
 
-        filled = all(field.text().strip() for field in self._inputs.values())
-        changed = any(
-            field.text().strip() != self._edit_snapshot.get(key, "")
-            for key, field in self._inputs.items()
-        )
-        if filled and changed:
+        filled = all(self._slot_value(field) for field in self._inputs.values())
+        if filled and self._is_changed():
             self.save()
             return
 
         # 没填满就回到第一个空框，不保存
-        empty = next((f for f in self._inputs.values() if not f.text().strip()), None)
+        empty = next((f for f in self._inputs.values() if not self._slot_value(f)), None)
         if empty is not None:
             empty.setFocus()
 
@@ -758,14 +943,25 @@ class Overlay(QWidget):
                 return super().eventFilter(obj, event)
 
             key = event.key()
+            ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            # Ctrl+Enter / Ctrl+空格 = 强制保存（允许空值）
+            if ctrl and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                self._force_save()
+                return True
+
+            if self._choices and isinstance(obj, QPushButton):
+                text = event.text()
+                if text in self._choices:
+                    self._pick_digit(str(name), text)
+                    return True
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                    self._open_picker(str(name))
+                    return True
+                return super().eventFilter(obj, event)
+
             is_advance = key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space)
             if not is_advance:
                 return super().eventFilter(obj, event)
-
-            # Ctrl+Enter / Ctrl+空格 = 强制保存（允许空值）
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                self._force_save()
-                return True
 
             self._on_return(str(name))
             return True
@@ -796,12 +992,18 @@ class Overlay(QWidget):
 
         codes: dict[str, str | None] = {}
         for name, field in self._inputs.items():
-            text = field.text().strip()
-            expected = self._code_length
-            if text and len(text) != expected:
-                label = getattr(self, "_input_labels", {}).get(name, name)
-                self._set_hint(f"{label} 需要 {expected} 位数字", error=True)
-                return
+            text = self._slot_value(field)
+            if self._choices:
+                if text and text not in self._choices:
+                    label = getattr(self, "_input_labels", {}).get(name, name)
+                    self._set_hint(f"{label} 的图案值不合法", error=True)
+                    return
+            else:
+                expected = self._code_length
+                if text and len(text) != expected:
+                    label = getattr(self, "_input_labels", {}).get(name, name)
+                    self._set_hint(f"{label} 需要 {expected} 位数字", error=True)
+                    return
             codes[name] = text or None
 
         if not any(codes.values()) and not self._editing_existing:
@@ -836,6 +1038,8 @@ class Overlay(QWidget):
             if not active:
                 widget.setCursor(Qt.CursorShape.BlankCursor)
             elif isinstance(widget, ClickableLabel):
+                widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            elif isinstance(widget, (QPushButton, ChoicePopup)):
                 widget.setCursor(Qt.CursorShape.PointingHandCursor)
             elif isinstance(widget, QLineEdit):
                 widget.setCursor(Qt.CursorShape.IBeamCursor)
@@ -995,7 +1199,8 @@ def _selftest() -> int:
         f"db_exists: {DB_PATH.is_file()}",
         f"seed: {window.seed_label.text()}",
         f"trial: {window.trial_label.text() or '(无)'}",
-        f"rows: {len(window.body.findChildren(QLineEdit))}",
+        f"rows: {len(window.body.findChildren(QLineEdit)) + len([x for x in window.body.findChildren(QLabel) if x.objectName() == 'choiceView'])}",
+        f"choices: {len(window._choices)}",
         f"size: {window.width()}x{window.height()}",
     ]
     for line in lines:

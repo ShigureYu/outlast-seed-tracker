@@ -145,6 +145,19 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
                 return report
 
         # 1) 关卡元信息：缺的补上
+        # 老库可能没有后来新增的 meta 列（例如 choices），先按远端结构补齐
+        remote_meta_columns = {
+            row[1]: row[2] for row in remote.execute(f"PRAGMA table_info({META_TABLE})")
+        }
+        local_meta_columns = {
+            row[1] for row in local.execute(f"PRAGMA table_info({META_TABLE})")
+        }
+        for name, type_name in remote_meta_columns.items():
+            if name not in local_meta_columns:
+                local.execute(
+                    f"ALTER TABLE {META_TABLE} ADD COLUMN {name} {type_name or 'TEXT'}"
+                )
+
         remote_meta = remote.execute(f"SELECT * FROM {META_TABLE}").fetchall()
         for row in remote_meta:
             exists = local.execute(
