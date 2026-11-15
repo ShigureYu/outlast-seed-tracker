@@ -31,6 +31,7 @@ from log_parser import normalize_trial_id, read_current_seed, read_current_state
 logger = logging.getLogger(__name__)
 
 from app_paths import DB_PATH, enable_utf8_stdout, ensure_database
+from slot_config import InputConfig, SlotSpec
 
 # 表名会拼进 SQL，所以必须白名单：只允许 CHJ_MT02 这种形态
 TABLE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -63,19 +64,11 @@ def get_symbols(conn: sqlite3.Connection, trial_id: str) -> list[str]:
 
 
 def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
-    """读关卡元信息。labels 是 JSON 串，调用方自己解析。"""
+    """读关卡元信息：只取展示所需字段和 input_config。"""
     columns = [row[1] for row in conn.execute(f"PRAGMA table_info(TRIAL_META)")]
     wanted = [
         c
-        for c in (
-            "trial_id",
-            "name_zh",
-            "map_name",
-            "labels",
-            "code_length",
-            "choices",
-            "input_spec",
-        )
+        for c in ("trial_id", "name_zh", "map_name", "input_config")
         if c in columns
     ]
     row = conn.execute(
@@ -89,10 +82,7 @@ def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
         meta.update(dict(zip(wanted, row)))
     meta.setdefault("name_zh", None)
     meta.setdefault("map_name", None)
-    meta.setdefault("labels", None)
-    meta.setdefault("code_length", 3)
-    meta.setdefault("choices", None)
-    meta.setdefault("input_spec", None)
+    meta.setdefault("input_config", None)
     return meta
 
 
@@ -165,67 +155,17 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _parse_labels(raw: str | None) -> dict[str, str]:
-    """解析 TRIAL_META.labels 里的 JSON；坏数据按"没有标签"处理。"""
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("TRIAL_META.labels 不是合法 JSON: %r", raw)
-        return {}
-    return {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
-
-
-def _parse_choices(raw: str | None) -> dict[str, str]:
-    """解析 TRIAL_META.choices 里的 JSON；坏数据按"没有配置"处理。
-
-    形如 {"1": "兔子", "2": "梅花", ...}，键是存进答案表的单个数字字符。
-    """
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("TRIAL_META.choices 不是合法 JSON: %r", raw)
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {str(k): str(v) for k, v in parsed.items()}
-
-
-def _parse_input_spec(raw: str | None) -> dict[str, dict]:
-    """解析 TRIAL_META.input_spec：按列名给出每格的输入规则。
-
-    形如 {"one": {"kind": "letter", ...}, "four": {"kind": "number", ...}}。
-    坏 JSON / 非对象规则按"没有配置"处理。
-    """
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("TRIAL_META.input_spec 不是合法 JSON: %r", raw)
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    spec: dict[str, dict] = {}
-    for name, rule in parsed.items():
-        if isinstance(rule, dict):
-            spec[str(name)] = {str(k): v for k, v in rule.items()}
-    return spec
-
-
 def describe_trial(
     trial_id: str | None = None,
     db_path: Path | str = DB_PATH,
 ) -> dict | None:
-    """返回一关的展示信息；答案表不存在时 slots 为空，但仍返回 meta 信息。
+    """返回一关的展示信息；答案表不存在或 input_config 无效时 slots 为空。
 
     形如：
         {'trial_id': 'CHJ_MT02', 'name_zh': '被告判决',
          'map_name': 'CourthouseJudicial',
-         'slots': [('skull', '骷髅'), ('spiral', '螺旋'), ...]}
+         'slots': [('skull', '骷髅'), ('spiral', '螺旋'), ...],
+         'slot_specs': {'skull': {'kind': 'number', ...}}}
     """
     trial = resolve_trial_id(trial_id)
     if trial is None:
@@ -240,29 +180,29 @@ def describe_trial(
         symbols = get_symbols(conn, trial) if has_table else []
         meta = get_trial_meta(conn, trial)
 
-    labels = _parse_labels(meta.get("labels"))
-    choices = _parse_choices(meta.get("choices"))
-    input_spec = _parse_input_spec(meta.get("input_spec"))
-    # 渲染什么、按什么顺序，完全由 labels 决定。
-    # 键在表里没有对应列时**依然渲染**（值显示为“—”），
-    # 这样“这列应该有数据但没有”能一眼看出来，而不是被静默跳过。
-    # 没有答案表时先不渲染格子，只把 meta 交给界面（顶栏显示地图名）。
-    slots = list(labels.items()) if has_table else []
-    if has_table:
-        missing = [name for name in labels if name not in symbols]
-        if missing:
-            logger.warning("labels 里这些键在表 %s 中不存在，界面会显示为缺值: %s", trial, missing)
+    config = InputConfig.from_json(meta.get("input_config"))
+    slots: list[tuple[str, str]] = []
+    slot_specs: dict[str, SlotSpec] = {}
+    if has_table and config:
+        existing = set(symbols)
+        for spec in config.resolved_slots():
+            if spec.column not in existing:
+                logger.warning(
+                    "input_config 里的列 %s 在表 %s 中不存在，已跳过", spec.column, trial
+                )
+                continue
+            slots.append((spec.column, spec.label))
+            slot_specs[spec.column] = spec
+    elif has_table and not config:
+        logger.warning("关卡 %s 没有可用的 input_config，界面不渲染格子", trial)
 
     return {
         "trial_id": trial,
         "name_zh": meta["name_zh"],
         "map_name": meta["map_name"],
-        # 没有映射就直接显示列名（英文），不为某一关写死兜底
         "slots": slots,
+        "slot_specs": slot_specs,
         "has_table": has_table,
-        "choices": choices,
-        "input_spec": input_spec,
-        "code_length": int(meta.get("code_length") or 3),
     }
 
 
@@ -332,9 +272,9 @@ def save_codes(
 def register_trial_from_log(trial_id: str | None, map_name: str | None) -> bool:
     """把日志里新出现的关卡登记到 TRIAL_META，返回是否真的插入了新行。
 
-    只插入、不更新：已有行原样保留，name_zh / labels / code_length
-    都是人工维护字段，这里绝不覆盖。map_name 为空时直接跳过，
-    保证登记进来的行一定有地图名。name_zh 留 NULL 表示待人工填写。
+    只插入、不更新：已有行原样保留，name_zh / input_config 都是人工维护字段。
+    map_name 为空时直接跳过，保证登记进来的行一定有地图名。
+    name_zh 留 NULL 表示待人工填写；input_config 留 NULL，界面暂不渲染格子。
     失败只记日志，不打断界面刷新。
     """
     if not trial_id or not TABLE_RE.match(trial_id):
@@ -348,8 +288,8 @@ def register_trial_from_log(trial_id: str | None, map_name: str | None) -> bool:
         with closing(_connect()) as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO TRIAL_META (trial_id, name_zh, map_name, labels, code_length)
-                VALUES (?, NULL, ?, NULL, 0)
+                INSERT INTO TRIAL_META (trial_id, name_zh, map_name)
+                VALUES (?, NULL, ?)
                 ON CONFLICT(trial_id) DO NOTHING
                 """,
                 (trial_id, map_name),
@@ -373,7 +313,12 @@ def _print_result(
 
     print(f"试炼: {meta['trial_id']}  {meta['name_zh'] or ''}  ({meta['map_name'] or ''})")
     print(f"Seed: {seed}")
-    labels = _parse_labels(meta.get("labels"))
+    config = InputConfig.from_json(meta.get("input_config"))
+    labels = (
+        {slot.column: slot.label for slot in config.slots}
+        if config
+        else {}
+    )
     width = max(len(name) for name in codes)
     for key, value in codes.items():
         label = labels.get(key) or key

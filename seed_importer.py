@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import sqlite3
@@ -38,6 +37,7 @@ import openpyxl
 logger = logging.getLogger(__name__)
 
 from app_paths import DATA_DIR, XLSX_PATH, enable_utf8_stdout
+from slot_config import InputConfig, SlotSpec
 
 DB_PATH = DATA_DIR / "seed.db"  # 正式库，固定名字，故意不跟随 config.json
 META_TABLE = "TRIAL_META"
@@ -110,10 +110,10 @@ TRIALS: tuple[TrialSpec, ...] = (
         name_zh="蛊惑孩童",
         map_name="FunParkIllusion",
         columns=(
-            ("one", "第1位"),
-            ("two", "第2位"),
-            ("three", "第3位"),
-            ("four", "第4位"),
+            ("one", "图案1"),
+            ("two", "图案2"),
+            ("three", "图案3"),
+            ("four", "图案4"),
         ),
         code_length=1,
         choices={
@@ -143,12 +143,12 @@ TRIALS: tuple[TrialSpec, ...] = (
         ),
         code_length=0,  # 由 input_spec 逐格定义
         input_spec={
-            "Letter1": {"kind": "letter", "length": 1, "charset": "A-O"},
-            "Letter2": {"kind": "letter", "length": 1, "charset": "A-O"},
-            "Letter3": {"kind": "letter", "length": 1, "charset": "A-O"},
-            "Number1": {"kind": "number", "length": 2, "min": 1, "max": 25},
-            "Number2": {"kind": "number", "length": 2, "min": 1, "max": 25},
-            "Number3": {"kind": "number", "length": 2, "min": 1, "max": 25},
+            "Letter1": {"kind": "letter", "length": 1, "min": "A", "max": "O"},
+            "Letter2": {"kind": "letter", "length": 1, "min": "A", "max": "O"},
+            "Letter3": {"kind": "letter", "length": 1, "min": "A", "max": "O"},
+            "Number1": {"kind": "number", "length": 2, "min": 1, "max": 25, "pad": True},
+            "Number2": {"kind": "number", "length": 2, "min": 1, "max": 25, "pad": True},
+            "Number3": {"kind": "number", "length": 2, "min": 1, "max": 25, "pad": True},
         },
     ),
 )
@@ -201,7 +201,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             labels      TEXT,
             code_length INTEGER DEFAULT 3,
             choices     TEXT,
-            input_spec  TEXT
+            input_spec  TEXT,
+            input_config TEXT
         )
         """
     )
@@ -214,6 +215,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN choices TEXT")
     if "input_spec" not in meta_columns:
         conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN input_spec TEXT")
+    if "input_config" not in meta_columns:
+        conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN input_config TEXT")
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -246,23 +249,51 @@ def ensure_table(conn: sqlite3.Connection, spec: TrialSpec) -> None:
             conn.execute(f"ALTER TABLE {spec.trial_id} ADD COLUMN {name} TEXT")
 
 
+def _build_input_config(spec: TrialSpec) -> InputConfig:
+    """把 TrialSpec 转成 InputConfig 对象。"""
+    slots: list[SlotSpec] = []
+    if spec.choices:
+        for name, label in spec.columns:
+            slots.append(SlotSpec(column=name, label=label, kind="pattern"))
+        return InputConfig(tuple(slots), dict(spec.choices))
+
+    for name, label in spec.columns:
+        rule = (spec.input_spec or {}).get(name) or {}
+        kind = str(rule.get("kind") or "number").lower()
+        if kind == "letter":
+            slots.append(
+                SlotSpec(
+                    column=name,
+                    label=label,
+                    kind="letter",
+                    length=int(rule.get("length") or 1),
+                    min=str(rule.get("min") or "A"),
+                    max=str(rule.get("max") or "Z"),
+                )
+            )
+            continue
+        length = int(rule.get("length") or spec.code_length or 1)
+        slots.append(
+            SlotSpec(
+                column=name,
+                label=label,
+                kind="number",
+                length=length,
+                min=int(rule.get("min", 0)),
+                max=int(rule.get("max", 10**length - 1)),
+                pad=bool(rule.get("pad", True)),
+            )
+        )
+    return InputConfig(tuple(slots), None)
+
+
 def _write_meta(conn: sqlite3.Connection, spec: TrialSpec) -> None:
-    labels = {name: label for name, label in spec.columns}
-    choices = json.dumps(spec.choices, ensure_ascii=False) if spec.choices else None
-    input_spec = json.dumps(spec.input_spec, ensure_ascii=False) if spec.input_spec else None
+    input_config = _build_input_config(spec).to_json()
     conn.execute(
         f"INSERT OR REPLACE INTO {META_TABLE} "
-        f"(trial_id, name_zh, map_name, labels, code_length, choices, input_spec) "
-        f"VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            spec.trial_id,
-            spec.name_zh,
-            spec.map_name,
-            json.dumps(labels, ensure_ascii=False),
-            spec.code_length,
-            choices,
-            input_spec,
-        ),
+        f"(trial_id, name_zh, map_name, input_config) "
+        f"VALUES (?, ?, ?, ?)",
+        (spec.trial_id, spec.name_zh, spec.map_name, input_config),
     )
 
 

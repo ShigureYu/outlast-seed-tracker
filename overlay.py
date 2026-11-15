@@ -55,6 +55,7 @@ from log_parser import (
     read_game_state,
 )
 from seed_lookup import describe_trial, read_codes, register_trial_from_log, save_codes
+from slot_config import SlotSpec
 
 logger = logging.getLogger(__name__)
 
@@ -338,8 +339,7 @@ class Overlay(QWidget):
         self._trial: str | None = None
         self._seed: str | None = None
         self._inputs: dict[str, QWidget] = {}
-        self._choices: dict[str, str] = {}
-        self._input_spec: dict[str, dict] = {}
+        self._slot_specs: dict[str, SlotSpec] = {}
         self._picker: ChoicePopup | None = None
 
         root = QVBoxLayout(self)
@@ -442,7 +442,6 @@ class Overlay(QWidget):
 
         self._worker = None
         self._editing_existing = False
-        self._code_length = 3
         self._collapsed = False
         self._input_labels: dict[str, str] = {}
         self._hint_token = 0
@@ -579,12 +578,9 @@ class Overlay(QWidget):
         """
         self._inputs = {}
         self._input_labels = {}
-        self._choices = info.get("choices") or {}
-        self._input_spec = info.get("input_spec") or {}
+        self._slot_specs = info.get("slot_specs") or {}
         self._edit_snapshot = {}
         slots = info["slots"]
-        code_length = int(info.get("code_length") or 3)
-        self._code_length = code_length
         per_row = 3 if len(slots) == 6 else 5  # 6 格排成 3+3，其余最多 5 个一行
         # 格子少于一行容量时居中显示，避免三个框被拉到整行宽
         center = len(slots) == 1
@@ -608,11 +604,14 @@ class Overlay(QWidget):
             caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             value = values.get(name)
-            if self._choices:
-                field = self._make_choice_widget(name, value, readonly)
+            spec = self._slot_specs.get(name)
+            if spec is None:
+                logger.warning("slot %s 没有配置，跳过渲染", name)
+                continue
+            if spec.kind == "pattern":
+                field = self._make_choice_widget(name, value, readonly, spec)
             else:
-                spec = self._input_spec.get(name) or {}
-                max_length, pattern, placeholder = self._input_rule(spec, code_length)
+                max_length, pattern, placeholder = self._input_rule(spec)
                 field = QLineEdit()
                 field.setMaxLength(max_length)
                 field.setFixedSize(64 if max_length > 1 else 76, 32)
@@ -659,10 +658,13 @@ class Overlay(QWidget):
                 self.grid.setColumnStretch(column_index + offset, 1)
         self.grid.setHorizontalSpacing(2)
 
-    def _make_choice_widget(self, name: str, value, readonly: bool) -> QWidget:
+    def _make_choice_widget(
+        self, name: str, value, readonly: bool, spec: SlotSpec
+    ) -> QWidget:
         """图案关卡的一个格子：只读是标签，编辑是可点开的按钮。"""
+        choices = spec.choices or {}
         digit = str(value) if value else ""
-        text = self._choices.get(digit)
+        text = choices.get(digit)
         widget: QWidget
         if readonly:
             label = QLabel(text or "—")
@@ -686,42 +688,50 @@ class Overlay(QWidget):
             widget = button
         return widget
 
-    def _input_rule(self, spec: dict, default_length: int) -> tuple[int, str, str]:
+    def _input_rule(self, spec: SlotSpec) -> tuple[int, str, str]:
         """返回一个格子的 (maxLength, 输入正则, 占位符)。"""
-        kind = str(spec.get("kind") or "").lower()
-        if kind == "letter":
-            length = int(spec.get("length") or 1)
-            charset = str(spec.get("charset") or "A-O").upper()
-            chars = "A-Oa-o" if charset == "A-O" else "A-Za-z"
-            return length, rf"[{chars}]{{0,{length}}}", "A"
-        if kind == "number":
-            length = int(spec.get("max_length") or spec.get("length") or 2)
+        length = int(spec.length or 1)
+        if spec.kind == "letter":
+            low = str(spec.min or "A").upper()
+            high = str(spec.max or "Z").upper()
+            chars = f"{low}-{high}{low.lower()}-{high.lower()}"
+            return length, rf"[{chars}]{{0,{length}}}", low
+        if spec.kind == "number":
             hint = ("0" * (length - 1) + "1") if length > 0 else "0"
             return length, rf"\d{{0,{length}}}", hint
-        return default_length, rf"\d{{0,{default_length}}}", "---"
+        return length, rf"\d{{0,{length}}}", "---"
 
     def _normalize_spec_value(self, name: str, text: str) -> str:
-        """按 input_spec 归一化一个格子的值；不合法时抛 ValueError。"""
-        spec = self._input_spec.get(name) or {}
-        kind = str(spec.get("kind") or "").lower()
+        """按 slot 配置归一化一个格子的值；不合法时抛 ValueError。"""
+        spec = self._slot_specs.get(name)
+        if spec is None:
+            raise ValueError("槽位没有配置")
         value = text.strip()
         if not value:
             return ""
-        if kind == "letter":
+        length = int(spec.length or 1)
+        if spec.kind == "letter":
             value = value.upper()
-            if len(value) != 1 or not ("A" <= value <= "O"):
-                raise ValueError("请输入 A-O 的单个字母")
+            low = str(spec.min or "A").upper()
+            high = str(spec.max or "Z").upper()
+            if len(value) != length or not all(low <= ch <= high for ch in value):
+                raise ValueError(f"请输入 {length} 位 {low}-{high} 的字母")
             return value
-        if kind == "number":
-            if not value.isdigit() or len(value) > 2:
-                raise ValueError("请输入 1-2 位数字")
+        if spec.kind == "number":
+            if not value.isdigit():
+                raise ValueError("请输入数字")
+            if len(value) > length:
+                raise ValueError(f"最多 {length} 位数字")
             number = int(value)
-            low = int(spec.get("min", 1))
-            high = int(spec.get("max", 25))
+            low = int(spec.min if spec.min is not None else 0)
+            high = int(spec.max if spec.max is not None else 10**length - 1)
             if not (low <= number <= high):
-                raise ValueError(f"数字需要在 {low:02d}-{high:02d} 之间")
-            length = int(spec.get("length") or 2)
-            return f"{number:0{length}d}"
+                raise ValueError(f"数字需要在 {low}-{high} 之间")
+            if spec.pad:
+                return f"{number:0{length}d}"
+            if len(value) != length:
+                raise ValueError(f"需要 {length} 位数字")
+            return value
         return value
 
     def _slot_value(self, widget: QWidget) -> str:
@@ -740,11 +750,13 @@ class Overlay(QWidget):
 
     def _open_picker(self, name: str) -> None:
         anchor = self._inputs.get(name)
-        if anchor is None or not self._choices:
+        spec = self._slot_specs.get(name)
+        choices = (spec.choices if spec else None) or {}
+        if anchor is None or not choices:
             return
         if self._picker is not None:
             self._picker.close()
-        self._picker = ChoicePopup(self._choices, str(anchor.property("digit") or ""), self)
+        self._picker = ChoicePopup(choices, str(anchor.property("digit") or ""), self)
         self._picker.chosen.connect(lambda digit, n=name: self._pick_digit(n, digit))
         self._picker.show_near(anchor)
 
@@ -754,7 +766,9 @@ class Overlay(QWidget):
             return
         widget.setProperty("digit", digit)
         if isinstance(widget, QPushButton):
-            widget.setText(self._choices.get(digit, digit))
+            spec = self._slot_specs.get(name)
+            choices = (spec.choices if spec else None) or {}
+            widget.setText(choices.get(digit, digit))
         if self._picker is not None:
             self._picker = None
 
@@ -814,8 +828,9 @@ class Overlay(QWidget):
         QTimer.singleShot(0, self._fit)
 
     def _on_return(self, name: str) -> None:
-        """Enter：普通关卡跳下一个框；图案关卡打开选择面板。"""
-        if self._choices:
+        """Enter：图案槽打开选择面板；其它槽跳到下一个框。"""
+        spec = self._slot_specs.get(name)
+        if spec is not None and spec.kind == "pattern":
             self._open_picker(name)
             return
 
@@ -994,9 +1009,11 @@ class Overlay(QWidget):
                 self._force_save()
                 return True
 
-            if self._choices and isinstance(obj, QPushButton):
+            spec = self._slot_specs.get(str(name))
+            choices = (spec.choices if spec else None) or {}
+            if spec is not None and spec.kind == "pattern" and isinstance(obj, QPushButton):
                 text = event.text()
-                if text in self._choices:
+                if text in choices:
                     self._pick_digit(str(name), text)
                     return True
                 if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
@@ -1039,20 +1056,20 @@ class Overlay(QWidget):
         for name, field in self._inputs.items():
             text = self._slot_value(field)
             label = getattr(self, "_input_labels", {}).get(name, name)
-            if self._choices:
-                if text and text not in self._choices:
+            spec = self._slot_specs.get(name)
+            if spec is None:
+                self._set_hint(f"{label} 没有配置", error=True)
+                return
+            if spec.kind == "pattern":
+                choices = spec.choices or {}
+                if text and text not in choices:
                     self._set_hint(f"{label} 的图案值不合法", error=True)
                     return
-            elif self._input_spec.get(name):
+            else:
                 try:
                     text = self._normalize_spec_value(name, text)
                 except ValueError as exc:
                     self._set_hint(f"{label}：{exc}", error=True)
-                    return
-            else:
-                expected = self._code_length
-                if text and len(text) != expected:
-                    self._set_hint(f"{label} 需要 {expected} 位数字", error=True)
                     return
             codes[name] = text or None
 
@@ -1250,7 +1267,7 @@ def _selftest() -> int:
         f"seed: {window.seed_label.text()}",
         f"trial: {window.trial_label.text() or '(无)'}",
         f"rows: {len(window.body.findChildren(QLineEdit)) + len([x for x in window.body.findChildren(QLabel) if x.objectName() == 'choiceView'])}",
-        f"choices: {len(window._choices)}",
+        f"choices: {sum(1 for s in window._slot_specs.values() if s.kind == 'pattern')}",
         f"size: {window.width()}x{window.height()}",
     ]
     for line in lines:
