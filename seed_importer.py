@@ -57,6 +57,7 @@ class TrialSpec:
     code_length: int = 3
     split_from: int | None = None  # 非空时表示：这一列是合并码，需要拆开
     choices: dict[str, str] | None = None  # 图案模式：数字字符 -> 显示名
+    input_spec: dict[str, dict] | None = None  # 每格输入规则（字母/数字等）
 
     @property
     def column_names(self) -> tuple[str, ...]:
@@ -127,6 +128,29 @@ TRIALS: tuple[TrialSpec, ...] = (
             "9": "黑桃",
         },
     ),
+    TrialSpec(
+        sheet=None,  # 游戏内录入，不走 xlsx
+        trial_id="TSR_MT01",
+        name_zh="取消广播",
+        map_name="TelevisionStudioRooftop",
+        columns=(
+            ("Letter1", "字母1"),
+            ("Letter2", "字母2"),
+            ("Letter3", "字母3"),
+            ("Number1", "数字1"),
+            ("Number2", "数字2"),
+            ("Number3", "数字3"),
+        ),
+        code_length=0,  # 由 input_spec 逐格定义
+        input_spec={
+            "Letter1": {"kind": "letter", "length": 1, "charset": "A-O"},
+            "Letter2": {"kind": "letter", "length": 1, "charset": "A-O"},
+            "Letter3": {"kind": "letter", "length": 1, "charset": "A-O"},
+            "Number1": {"kind": "number", "length": 2, "min": 1, "max": 25},
+            "Number2": {"kind": "number", "length": 2, "min": 1, "max": 25},
+            "Number3": {"kind": "number", "length": 2, "min": 1, "max": 25},
+        },
+    ),
 )
 
 
@@ -176,7 +200,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             map_name    TEXT NOT NULL,
             labels      TEXT,
             code_length INTEGER DEFAULT 3,
-            choices     TEXT
+            choices     TEXT,
+            input_spec  TEXT
         )
         """
     )
@@ -187,6 +212,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN code_length INTEGER DEFAULT 3")
     if "choices" not in meta_columns:
         conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN choices TEXT")
+    if "input_spec" not in meta_columns:
+        conn.execute(f"ALTER TABLE {META_TABLE} ADD COLUMN input_spec TEXT")
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -222,10 +249,11 @@ def ensure_table(conn: sqlite3.Connection, spec: TrialSpec) -> None:
 def _write_meta(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     labels = {name: label for name, label in spec.columns}
     choices = json.dumps(spec.choices, ensure_ascii=False) if spec.choices else None
+    input_spec = json.dumps(spec.input_spec, ensure_ascii=False) if spec.input_spec else None
     conn.execute(
         f"INSERT OR REPLACE INTO {META_TABLE} "
-        f"(trial_id, name_zh, map_name, labels, code_length, choices) "
-        f"VALUES (?, ?, ?, ?, ?, ?)",
+        f"(trial_id, name_zh, map_name, labels, code_length, choices, input_spec) "
+        f"VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             spec.trial_id,
             spec.name_zh,
@@ -233,6 +261,7 @@ def _write_meta(conn: sqlite3.Connection, spec: TrialSpec) -> None:
             json.dumps(labels, ensure_ascii=False),
             spec.code_length,
             choices,
+            input_spec,
         ),
     )
 

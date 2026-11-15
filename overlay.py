@@ -339,6 +339,7 @@ class Overlay(QWidget):
         self._seed: str | None = None
         self._inputs: dict[str, QWidget] = {}
         self._choices: dict[str, str] = {}
+        self._input_spec: dict[str, dict] = {}
         self._picker: ChoicePopup | None = None
 
         root = QVBoxLayout(self)
@@ -579,14 +580,18 @@ class Overlay(QWidget):
         self._inputs = {}
         self._input_labels = {}
         self._choices = info.get("choices") or {}
+        self._input_spec = info.get("input_spec") or {}
         self._edit_snapshot = {}
         slots = info["slots"]
         code_length = int(info.get("code_length") or 3)
         self._code_length = code_length
-        per_row = 5  # 一行最多 5 个，超过就换行（比如以后某关有 7 个图案）
+        per_row = 3 if len(slots) == 6 else 5  # 6 格排成 3+3，其余最多 5 个一行
         # 格子少于一行容量时居中显示，避免三个框被拉到整行宽
         center = len(slots) == 1
         offset = 1 if center else 0
+        # 切换关卡后沿用同一个 QGridLayout，先清掉上一次的列拉伸
+        for column_index in range(self.grid.columnCount()):
+            self.grid.setColumnStretch(column_index, 0)
         if center:
             self.grid.addWidget(QWidget(), 0, 0)
             self.grid.setColumnStretch(0, 1)
@@ -606,9 +611,11 @@ class Overlay(QWidget):
             if self._choices:
                 field = self._make_choice_widget(name, value, readonly)
             else:
+                spec = self._input_spec.get(name) or {}
+                max_length, pattern, placeholder = self._input_rule(spec, code_length)
                 field = QLineEdit()
-                field.setMaxLength(code_length)
-                field.setFixedSize(64 if code_length > 1 else 76, 32)
+                field.setMaxLength(max_length)
+                field.setFixedSize(64 if max_length > 1 else 76, 32)
                 field.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
                 if readonly:
@@ -618,9 +625,9 @@ class Overlay(QWidget):
                     field.installEventFilter(self)  # 双击进入编辑
                 else:
                     field.setValidator(
-                        QRegularExpressionValidator(QRegularExpression(rf"\d{{0,{code_length}}}"))
+                        QRegularExpressionValidator(QRegularExpression(pattern))
                     )
-                    field.setPlaceholderText("---")
+                    field.setPlaceholderText(placeholder)
                     field.setText(value or "")
                     field.setProperty("slot", name)
                     field.installEventFilter(self)
@@ -678,6 +685,44 @@ class Overlay(QWidget):
             button.installEventFilter(self)
             widget = button
         return widget
+
+    def _input_rule(self, spec: dict, default_length: int) -> tuple[int, str, str]:
+        """返回一个格子的 (maxLength, 输入正则, 占位符)。"""
+        kind = str(spec.get("kind") or "").lower()
+        if kind == "letter":
+            length = int(spec.get("length") or 1)
+            charset = str(spec.get("charset") or "A-O").upper()
+            chars = "A-Oa-o" if charset == "A-O" else "A-Za-z"
+            return length, rf"[{chars}]{{0,{length}}}", "A"
+        if kind == "number":
+            length = int(spec.get("max_length") or spec.get("length") or 2)
+            hint = ("0" * (length - 1) + "1") if length > 0 else "0"
+            return length, rf"\d{{0,{length}}}", hint
+        return default_length, rf"\d{{0,{default_length}}}", "---"
+
+    def _normalize_spec_value(self, name: str, text: str) -> str:
+        """按 input_spec 归一化一个格子的值；不合法时抛 ValueError。"""
+        spec = self._input_spec.get(name) or {}
+        kind = str(spec.get("kind") or "").lower()
+        value = text.strip()
+        if not value:
+            return ""
+        if kind == "letter":
+            value = value.upper()
+            if len(value) != 1 or not ("A" <= value <= "O"):
+                raise ValueError("请输入 A-O 的单个字母")
+            return value
+        if kind == "number":
+            if not value.isdigit() or len(value) > 2:
+                raise ValueError("请输入 1-2 位数字")
+            number = int(value)
+            low = int(spec.get("min", 1))
+            high = int(spec.get("max", 25))
+            if not (low <= number <= high):
+                raise ValueError(f"数字需要在 {low:02d}-{high:02d} 之间")
+            length = int(spec.get("length") or 2)
+            return f"{number:0{length}d}"
+        return value
 
     def _slot_value(self, widget: QWidget) -> str:
         """取一个格子的当前值：图案按钮取 digit，普通输入框取文本。"""
@@ -993,15 +1038,20 @@ class Overlay(QWidget):
         codes: dict[str, str | None] = {}
         for name, field in self._inputs.items():
             text = self._slot_value(field)
+            label = getattr(self, "_input_labels", {}).get(name, name)
             if self._choices:
                 if text and text not in self._choices:
-                    label = getattr(self, "_input_labels", {}).get(name, name)
                     self._set_hint(f"{label} 的图案值不合法", error=True)
+                    return
+            elif self._input_spec.get(name):
+                try:
+                    text = self._normalize_spec_value(name, text)
+                except ValueError as exc:
+                    self._set_hint(f"{label}：{exc}", error=True)
                     return
             else:
                 expected = self._code_length
                 if text and len(text) != expected:
-                    label = getattr(self, "_input_labels", {}).get(name, name)
                     self._set_hint(f"{label} 需要 {expected} 位数字", error=True)
                     return
             codes[name] = text or None

@@ -67,7 +67,15 @@ def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
     columns = [row[1] for row in conn.execute(f"PRAGMA table_info(TRIAL_META)")]
     wanted = [
         c
-        for c in ("trial_id", "name_zh", "map_name", "labels", "code_length", "choices")
+        for c in (
+            "trial_id",
+            "name_zh",
+            "map_name",
+            "labels",
+            "code_length",
+            "choices",
+            "input_spec",
+        )
         if c in columns
     ]
     row = conn.execute(
@@ -84,6 +92,7 @@ def get_trial_meta(conn: sqlite3.Connection, trial_id: str) -> dict:
     meta.setdefault("labels", None)
     meta.setdefault("code_length", 3)
     meta.setdefault("choices", None)
+    meta.setdefault("input_spec", None)
     return meta
 
 
@@ -185,6 +194,28 @@ def _parse_choices(raw: str | None) -> dict[str, str]:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
+def _parse_input_spec(raw: str | None) -> dict[str, dict]:
+    """解析 TRIAL_META.input_spec：按列名给出每格的输入规则。
+
+    形如 {"one": {"kind": "letter", ...}, "four": {"kind": "number", ...}}。
+    坏 JSON / 非对象规则按"没有配置"处理。
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("TRIAL_META.input_spec 不是合法 JSON: %r", raw)
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    spec: dict[str, dict] = {}
+    for name, rule in parsed.items():
+        if isinstance(rule, dict):
+            spec[str(name)] = {str(k): v for k, v in rule.items()}
+    return spec
+
+
 def describe_trial(
     trial_id: str | None = None,
     db_path: Path | str = DB_PATH,
@@ -211,6 +242,7 @@ def describe_trial(
 
     labels = _parse_labels(meta.get("labels"))
     choices = _parse_choices(meta.get("choices"))
+    input_spec = _parse_input_spec(meta.get("input_spec"))
     # 渲染什么、按什么顺序，完全由 labels 决定。
     # 键在表里没有对应列时**依然渲染**（值显示为“—”），
     # 这样“这列应该有数据但没有”能一眼看出来，而不是被静默跳过。
@@ -229,6 +261,7 @@ def describe_trial(
         "slots": slots,
         "has_table": has_table,
         "choices": choices,
+        "input_spec": input_spec,
         "code_length": int(meta.get("code_length") or 3),
     }
 
