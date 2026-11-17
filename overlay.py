@@ -2,7 +2,7 @@
 
 刷新策略：
 - 每 60 秒扫一次日志，只有 (Trial ID, Seed) 变了才重建界面，避免打字被冲掉；
-- 录入过程中暂停自动刷新；F5 或点 ⟳ 可以手动刷新。
+- 录入过程中暂停自动刷新；F5 / 全局 Alt+N 或点 ⟳ 可以手动刷新。
 
 状态（从上到下三个区）：
 - 顶部：始终显示 Seed；库里有这张表时，旁边补上「中文名 CHJ_MT02」。
@@ -15,10 +15,27 @@ from __future__ import annotations
 import logging
 import sys
 
-from PyQt6.QtCore import QEvent, QPoint, QRegularExpression, Qt, QThread, QTimer, pyqtSignal
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+else:  # pragma: no cover - 项目主目标平台是 Windows
+    ctypes = None
+    wintypes = None
+
+from PyQt6.QtCore import (
+    QAbstractNativeEventFilter,
+    QEvent,
+    QPoint,
+    QRegularExpression,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QKeySequence,
     QPainter,
@@ -63,6 +80,53 @@ POLL_MS = 60_000
 SERVER_NAME = "OPPOverlay-single-instance"
 MIN_WINDOW_WIDTH = 300
 MAX_WINDOW_WIDTH = 560
+
+# Windows 全局热键 / 鼠标穿透
+HOTKEY_ID_TOGGLE = 0x4F50
+HOTKEY_ID_REFRESH = 0x4F51
+MOD_ALT = 0x0001
+MOD_NOREPEAT = 0x4000
+WM_HOTKEY = 0x0312
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_LAYERED = 0x00080000
+WS_EX_NOACTIVATE = 0x08000000
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_FRAMECHANGED = 0x0020
+
+_user32 = ctypes.windll.user32 if ctypes is not None else None
+if _user32 is not None:
+    _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    _user32.RegisterHotKey.argtypes = [
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.c_uint,
+    ]
+    _user32.RegisterHotKey.restype = wintypes.BOOL
+    _user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.UnregisterHotKey.restype = wintypes.BOOL
+    _user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    _user32.SetWindowPos.restype = wintypes.BOOL
+    _user32.GetForegroundWindow.restype = wintypes.HWND
+    _user32.IsWindow.argtypes = [wintypes.HWND]
+    _user32.IsWindow.restype = wintypes.BOOL
+    _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    _user32.SetForegroundWindow.restype = wintypes.BOOL
+
 
 STYLE = """
 QWidget {
@@ -315,6 +379,31 @@ class ChoicePopup(QFrame):
         self.setFocus()
 
 
+class HotkeyFilter(QAbstractNativeEventFilter):
+    """接收 Windows 全局热键消息。"""
+
+    def __init__(self, callbacks: dict[int, object]) -> None:
+        super().__init__()
+        self._callbacks = callbacks
+
+    def nativeEventFilter(self, event_type, message):  # noqa: N802 - Qt 接口
+        if _user32 is None:
+            return False, 0
+        if bytes(event_type) not in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+            return False, 0
+        try:
+            msg = wintypes.MSG.from_address(int(message))
+        except (TypeError, ValueError):
+            return False, 0
+        if msg.message != WM_HOTKEY:
+            return False, 0
+        callback = self._callbacks.get(int(msg.wParam))
+        if callback is not None:
+            QTimer.singleShot(0, callback)
+            return True, 0
+        return False, 0
+
+
 class Overlay(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -334,6 +423,12 @@ class Overlay(QWidget):
         self._drag_offset: QPoint | None = None
         self._placed = False
         self._editing = False
+        self._interactive = False
+        self._hwnd = 0
+        self._last_foreground_hwnd = 0
+        self._hotkey_filter: HotkeyFilter | None = None
+        self._hotkey_ids: set[int] = set()
+        self._win_features_ready = False
         self._last_key: tuple[str | None, str | None] | None = None
 
         self._trial: str | None = None
@@ -362,8 +457,8 @@ class Overlay(QWidget):
 
         self.refresh_button = ClickableLabel("刷新")
         self.refresh_button.setObjectName("refresh")
-        self.refresh_button.setToolTip("手动刷新（F5）")
-        self.refresh_button.clicked.connect(lambda: self.refresh(force=True))
+        self.refresh_button.setToolTip("手动刷新（F5 / 全局 Alt+N）")
+        self.refresh_button.clicked.connect(self._manual_refresh)
 
         # 用的不是正式库时给个显眼标记，避免忘了自己在沙盒里
         self.db_badge = QLabel("测试")
@@ -448,7 +543,9 @@ class Overlay(QWidget):
         self._log_stamp: tuple[int, int] | None = None
 
         self.shortcut = QShortcut(QKeySequence("F5"), self)
-        self.shortcut.activated.connect(lambda: self.refresh(force=True))
+        self.shortcut.activated.connect(self._manual_refresh)
+        self.global_refresh_shortcut = QShortcut(QKeySequence("Alt+N"), self)
+        self.global_refresh_shortcut.activated.connect(self._manual_refresh)
         self.force_save_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         self.force_save_shortcut.activated.connect(self._force_save)
         self.sync_shortcut = QShortcut(QKeySequence("Ctrl+F5"), self)
@@ -1097,7 +1194,23 @@ class Overlay(QWidget):
         """
         super().changeEvent(event)
         if event.type() == QEvent.Type.ActivationChange:
-            self._apply_cursor(self.isActiveWindow())
+            self._apply_cursor(self._interactive)
+            if self._interactive and not self.isActiveWindow():
+                # 等激活变化落定后再判断，避免被图案弹窗/模态框误触发
+                QTimer.singleShot(0, self._auto_leave_interactive)
+
+    def _auto_leave_interactive(self) -> None:
+        """用户点到游戏或别的窗口时，自动回到穿透模式。"""
+        if not self._interactive or self.isActiveWindow():
+            return
+        app = QApplication.instance()
+        if app is not None and (
+            app.activePopupWidget() is not None or app.activeModalWidget() is not None
+        ):
+            return
+        if self._picker is not None:
+            return
+        self._set_interactive(False)
 
     def _apply_cursor(self, active: bool) -> None:
         self.setCursor(Qt.CursorShape.ArrowCursor if active else Qt.CursorShape.BlankCursor)
@@ -1126,6 +1239,148 @@ class Overlay(QWidget):
         if not self._placed:
             self._placed = True
             self._move_to_top_center()
+        QTimer.singleShot(0, self._init_windows_features)
+
+    def _init_windows_features(self) -> None:
+        """首次显示后应用鼠标穿透并注册全局热键。"""
+        if self._win_features_ready or sys.platform != "win32" or _user32 is None:
+            return
+        self._win_features_ready = True
+        self._hwnd = int(self.winId())
+        self._set_click_through(True)
+        self._install_hotkey()
+
+    def _set_click_through(self, enabled: bool) -> None:
+        """穿透模式不接收鼠标，也不会被点击激活。"""
+        if _user32 is None or not self._hwnd:
+            return
+        ex_style = _user32.GetWindowLongPtrW(self._hwnd, GWL_EXSTYLE)
+        if enabled:
+            ex_style |= WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE
+        else:
+            ex_style &= ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
+            ex_style |= WS_EX_LAYERED
+        _user32.SetWindowLongPtrW(self._hwnd, GWL_EXSTYLE, ex_style)
+        _user32.SetWindowPos(
+            self._hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        )
+
+    def _install_hotkey(self) -> None:
+        if _user32 is None or not self._hwnd or self._hotkey_filter is not None:
+            return
+        callbacks: dict[int, object] = {}
+        failed: list[str] = []
+        if _user32.RegisterHotKey(
+            self._hwnd, HOTKEY_ID_TOGGLE, MOD_ALT | MOD_NOREPEAT, ord("M")
+        ):
+            callbacks[HOTKEY_ID_TOGGLE] = self.toggle_interactive
+        else:
+            failed.append("Alt+M")
+        if _user32.RegisterHotKey(
+            self._hwnd, HOTKEY_ID_REFRESH, MOD_ALT | MOD_NOREPEAT, ord("N")
+        ):
+            callbacks[HOTKEY_ID_REFRESH] = self._refresh_from_hotkey
+        else:
+            failed.append("Alt+N")
+
+        if callbacks:
+            app = QApplication.instance()
+            if app is not None:
+                self._hotkey_ids = set(callbacks)
+                self._hotkey_filter = HotkeyFilter(callbacks)
+                app.installNativeEventFilter(self._hotkey_filter)
+        if failed:
+            logger.warning("全局热键注册失败: %s", ", ".join(failed))
+            self._set_hint(
+                f"热键注册失败：{', '.join(failed)}", error=True, auto_hide_ms=0
+            )
+
+    def _remove_hotkey(self) -> None:
+        if _user32 is not None and self._hwnd:
+            for hotkey_id in list(self._hotkey_ids):
+                _user32.UnregisterHotKey(self._hwnd, hotkey_id)
+        self._hotkey_ids.clear()
+        app = QApplication.instance()
+        if app is not None and self._hotkey_filter is not None:
+            app.removeNativeEventFilter(self._hotkey_filter)
+        self._hotkey_filter = None
+
+    def _manual_refresh(self) -> None:
+        """按钮、F5、全局 Alt+N 共用的手动刷新，刷新后给一个可见反馈。"""
+        self.refresh(force=True)
+        self._set_hint("已刷新")
+
+    def _refresh_from_hotkey(self) -> None:
+        self._manual_refresh()
+
+    def toggle_interactive(self) -> None:
+        if sys.platform != "win32" or _user32 is None:
+            return
+        self._set_interactive(not self._interactive)
+
+    def _set_interactive(self, interactive: bool) -> None:
+        """在“鼠标穿透”和“可交互”之间切换。"""
+        self._interactive = interactive
+        self._drag_offset = None
+        if interactive:
+            self._remember_foreground()
+            self._set_click_through(False)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            if _user32 is not None and self._hwnd:
+                _user32.SetForegroundWindow(self._hwnd)
+            self._apply_cursor(True)
+            self._move_cursor_into_window()
+            if self._editing:
+                first = next(iter(self._inputs.values()), None)
+                if first is not None:
+                    first.setFocus()
+            else:
+                self.setFocus()
+            return
+
+        if self._picker is not None:
+            self._picker.close()
+            self._picker = None
+        self.clearFocus()
+        self._set_click_through(True)
+        self._apply_cursor(False)
+        self._restore_foreground()
+
+    def _move_cursor_into_window(self) -> None:
+        """进入交互模式时把指针直接放到悬浮窗中心，避免玩家找不到鼠标。"""
+        if not self.isVisible():
+            return
+        QCursor.setPos(self.mapToGlobal(self.rect().center()))
+
+    def _remember_foreground(self) -> None:
+        """进入交互前记住游戏窗口，退出时还回去。"""
+        if _user32 is None or not self._hwnd:
+            return
+        hwnd = _user32.GetForegroundWindow()
+        if hwnd and hwnd != self._hwnd:
+            self._last_foreground_hwnd = hwnd
+
+    def _restore_foreground(self) -> None:
+        """回到穿透时把焦点还给进入交互前的窗口（通常是游戏）。"""
+        if _user32 is None or not self._last_foreground_hwnd:
+            return
+        # 用户已经点到别的窗口时不要再抢回来；只在悬浮窗仍在前台时恢复
+        current = _user32.GetForegroundWindow()
+        if current and current != self._hwnd:
+            return
+        hwnd = self._last_foreground_hwnd
+        if hwnd == self._hwnd or not _user32.IsWindow(hwnd):
+            self._last_foreground_hwnd = 0
+            return
+        _user32.SetForegroundWindow(hwnd)
 
     def _move_to_top_center(self) -> None:
         screen = self.screen() or QApplication.primaryScreen()
@@ -1150,6 +1405,7 @@ class Overlay(QWidget):
                 worker.wait(500)
         self._worker = None
 
+        self._remove_hotkey()
         super().closeEvent(event)
         app = QApplication.instance()
         if app is not None:
