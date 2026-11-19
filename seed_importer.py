@@ -28,6 +28,7 @@ import argparse
 import logging
 import re
 import sqlite3
+from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,7 @@ class TrialSpec:
     split_from: int | None = None  # 非空时表示：这一列是合并码，需要拆开
     choices: dict[str, str] | None = None  # 图案模式：数字字符 -> 显示名
     input_spec: dict[str, dict] | None = None  # 每格输入规则（字母/数字等）
+    order_insensitive: bool = False  # 槽位顺序无关（如 TSR）
 
     def __post_init__(self) -> None:
         # 中文名可能重复，Excel sheet 一律用唯一的 trial_id 命名
@@ -157,6 +159,7 @@ TRIALS: tuple[TrialSpec, ...] = (
             "Number2": {"kind": "number", "length": 2, "min": 1, "max": 25, "pad": True},
             "Number3": {"kind": "number", "length": 2, "min": 1, "max": 25, "pad": True},
         },
+        order_insensitive=True,
     ),
 )
 
@@ -410,6 +413,14 @@ def _show_value(value: object) -> str:
     return "NULL" if value is None else str(value)
 
 
+def _same_multiset(left, right) -> bool:
+    """忽略槽位顺序，比较两组值是否完全相同（含重复值和 NULL）。"""
+    normalize = lambda values: Counter(
+        None if value is None else str(value) for value in values
+    )
+    return normalize(left) == normalize(right)
+
+
 def _write_import_conflicts(conflicts: list[tuple[str, int, list[tuple[str, object, object]]]]) -> Path:
     path = DATA_DIR / "import_conflicts.txt"
     lines = ["# Excel 导入冲突（以数据库为准，未覆盖）", ""]
@@ -503,6 +514,16 @@ def import_trial(
             )
             filled_rows += 1
             filled_fields += len(fills)
+
+        if spec.order_insensitive:
+            effective = list(local_values)
+            column_index = {name: index for index, name in enumerate(columns)}
+            for column, value in fills:
+                effective[column_index[column]] = value
+            if _same_multiset(effective, codes):
+                # 例如 TSR：F,O,N 与 N,F,O 视为同一组答案
+                diffs = []
+
         if diffs:
             conflicts.append((spec.trial_id, seed, diffs))
         if not fills and not diffs:
