@@ -188,6 +188,11 @@ def _normalize_import_value(
         for digit, label in choices.items():
             if text == label:
                 return digit
+        # 允许用单字简写：兔/梅/王/方/眼/火/红/月/黑
+        if len(text) == 1:
+            matches = [digit for digit, label in choices.items() if label.startswith(text)]
+            if len(matches) == 1:
+                return matches[0]
         return None
 
     if slot.kind == "letter":
