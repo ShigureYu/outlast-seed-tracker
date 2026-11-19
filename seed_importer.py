@@ -105,7 +105,7 @@ TRIALS: tuple[TrialSpec, ...] = (
         code_length=3,
     ),
     TrialSpec(
-        sheet=None,  # 数据来自游戏内录入，不走 xlsx
+        sheet="蛊惑孩童",
         trial_id="FPI_MT01",
         name_zh="蛊惑孩童",
         map_name="FunParkIllusion",
@@ -129,7 +129,7 @@ TRIALS: tuple[TrialSpec, ...] = (
         },
     ),
     TrialSpec(
-        sheet=None,  # 游戏内录入，不走 xlsx
+        sheet="取消广播",
         trial_id="TSR_MT01",
         name_zh="取消广播",
         map_name="TelevisionStudioRooftop",
@@ -169,7 +169,53 @@ def _normalize_seed(raw: object) -> int | None:
     return seed if 1 <= seed <= 999 else None
 
 
-def _parse_codes(spec: TrialSpec, row: tuple) -> list[str | None]:
+def _normalize_import_value(
+    slot: SlotSpec,
+    value: object,
+    config: InputConfig,
+    strict_number: bool = False,
+) -> str | None:
+    """按 input_config 的槽位规则校验/归一化一个 Excel 单元格。"""
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+
+    if slot.kind == "pattern":
+        choices = config.choices_for(slot)
+        if text in choices:
+            return text
+        # 也接受中文/emoji 直接写在单元格里，反查成数字键
+        for digit, label in choices.items():
+            if text == label:
+                return digit
+        return None
+
+    if slot.kind == "letter":
+        text = text.upper()
+        if len(text) != slot.length:
+            return None
+        low = str(slot.min or "A")
+        high = str(slot.max or "Z")
+        return text if all(low <= ch <= high for ch in text) else None
+
+    if not text.isdigit():
+        return None
+    if len(text) > int(slot.length or 1):
+        return None
+    number = int(text)
+    low = int(slot.min if slot.min is not None else 0)
+    high = int(slot.max if slot.max is not None else 10 ** int(slot.length or 1) - 1)
+    if not low <= number <= high:
+        return None
+    length = int(slot.length or 1)
+    if strict_number or not slot.pad:
+        return text if len(text) == length else None
+    return f"{number:0{length}d}"
+
+
+def _parse_codes(
+    spec: TrialSpec, row: tuple, config: InputConfig | None = None
+) -> list[str | None]:
     """从一行里取出该关所有码值；不合法/缺失的位置返回 None。"""
     width = len(spec.columns)
     if spec.split_from is None:
@@ -184,11 +230,14 @@ def _parse_codes(spec: TrialSpec, row: tuple) -> list[str | None]:
         # 合并码必须正好是 width 位数字，否则整行不拆
         raw_values = list(text) if re.fullmatch(rf"\d{{{width}}}", text) else [None] * width
 
-    result: list[str | None] = []
-    for value in raw_values:
-        text = str(value).strip() if value is not None else ""
-        result.append(text if re.fullmatch(rf"\d{{{spec.code_length}}}", text) else None)
-    return result
+    config = config or _build_input_config(spec)
+    slots = {slot.column: slot for slot in config.slots}
+    # 旧式 code_length 列保持“必须正好 N 位”，避免把缺位数据静默补零
+    strict_number = spec.input_spec is None
+    return [
+        _normalize_import_value(slots[name], value, config, strict_number)
+        for (name, _label), value in zip(spec.columns, raw_values)
+    ]
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
@@ -307,6 +356,7 @@ def load_rows(spec: TrialSpec) -> tuple[list[tuple], list[tuple[int, int, str]]]
     rows: list[tuple] = []
     gaps: list[tuple[int, int, str]] = []
     width = len(spec.columns)
+    config = _build_input_config(spec)
 
     for index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
         if index == 1:
@@ -320,7 +370,7 @@ def load_rows(spec: TrialSpec) -> tuple[list[tuple], list[tuple[int, int, str]]]
             logger.warning("[%s] 第 %d 行 seed 非法，跳过: %r", spec.sheet, index, row[0])
             continue
 
-        codes = _parse_codes(spec, row)
+        codes = _parse_codes(spec, row, config)
         missing = [
             f"{label}={value!r}"
             for (name, label), value in zip(spec.columns, codes)
