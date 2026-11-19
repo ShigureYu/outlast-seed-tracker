@@ -49,7 +49,7 @@ NON_CJK_RE = re.compile(r"[^\u4e00-\u9fff]")
 
 @dataclass(frozen=True)
 class TrialSpec:
-    sheet: str | None  # None = 只建表登记结构，不导入数据
+    sheet: str | None  # None = 只建表登记结构，不导入数据；有数据时必须等于 trial_id
     trial_id: str
     name_zh: str
     map_name: str
@@ -59,6 +59,13 @@ class TrialSpec:
     choices: dict[str, str] | None = None  # 图案模式：数字字符 -> 显示名
     input_spec: dict[str, dict] | None = None  # 每格输入规则（字母/数字等）
 
+    def __post_init__(self) -> None:
+        # 中文名可能重复，Excel sheet 一律用唯一的 trial_id 命名
+        if self.sheet is not None and self.sheet != self.trial_id:
+            raise ValueError(
+                f"sheet 必须等于 trial_id: {self.sheet!r} != {self.trial_id!r}"
+            )
+
     @property
     def column_names(self) -> tuple[str, ...]:
         return tuple(name for name, _ in self.columns)
@@ -66,7 +73,7 @@ class TrialSpec:
 
 TRIALS: tuple[TrialSpec, ...] = (
     TrialSpec(
-        sheet="被告判决",
+        sheet="CHJ_MT02",
         trial_id="CHJ_MT02",
         name_zh="对被告作出判决",
         map_name="CourthouseJudicial",
@@ -80,7 +87,7 @@ TRIALS: tuple[TrialSpec, ...] = (
         code_length=3,
     ),
     TrialSpec(
-        sheet="度假村",
+        sheet="RES_MT01",
         trial_id="RES_MT01",
         name_zh="侦破谋杀案",
         map_name="ResortSpa",
@@ -93,7 +100,7 @@ TRIALS: tuple[TrialSpec, ...] = (
         split_from=1,  # xlsx 第 2 列是一个三位数，拆成三段
     ),
     TrialSpec(
-        sheet=None,  # 暂无数据表：只登记结构，让界面能录入
+        sheet="MHS_MT01",
         trial_id="MHS_MT01",
         name_zh="清空保险库",
         map_name="MobsterHideoutSyndicate",
@@ -105,7 +112,7 @@ TRIALS: tuple[TrialSpec, ...] = (
         code_length=3,
     ),
     TrialSpec(
-        sheet="蛊惑孩童",
+        sheet="FPI_MT01",
         trial_id="FPI_MT01",
         name_zh="蛊惑孩童",
         map_name="FunParkIllusion",
@@ -129,7 +136,7 @@ TRIALS: tuple[TrialSpec, ...] = (
         },
     ),
     TrialSpec(
-        sheet="取消广播",
+        sheet="TSR_MT01",
         trial_id="TSR_MT01",
         name_zh="取消广播",
         map_name="TelevisionStudioRooftop",
