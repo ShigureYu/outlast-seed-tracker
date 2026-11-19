@@ -406,41 +406,106 @@ def register_only(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     print(f"[{spec.trial_id}] {spec.name_zh}: 仅登记结构，表内现有 {total} 行")
 
 
-def import_trial(conn: sqlite3.Connection, spec: TrialSpec) -> None:
+def _show_value(value: object) -> str:
+    return "NULL" if value is None else str(value)
+
+
+def _write_import_conflicts(conflicts: list[tuple[str, int, list[tuple[str, object, object]]]]) -> Path:
+    path = DATA_DIR / "import_conflicts.txt"
+    lines = ["# Excel 导入冲突（以数据库为准，未覆盖）", ""]
+    for trial_id, seed, diffs in conflicts:
+        for column, local_value, excel_value in diffs:
+            lines.append(
+                f"{trial_id} seed={seed} {column}: "
+                f"数据库={_show_value(local_value)} Excel={_show_value(excel_value)}"
+            )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def import_trial(
+    conn: sqlite3.Connection, spec: TrialSpec
+) -> tuple[int, int, list[tuple[str, int, list[tuple[str, object, object]]]]]:
     if spec.sheet is None:
         register_only(conn, spec)
-        return
+        return 0, 0, []
 
     rows, gaps = load_rows(spec)
 
     seen: dict[int, int] = {}
+    duplicate_seeds: list[int] = []
     for seed, *_ in rows:
         seen[seed] = seen.get(seed, 0) + 1
-    duplicated = [s for s, n in seen.items() if n > 1]
-    if duplicated:
-        logger.warning("[%s] 有 %d 个 seed 重复: %s", spec.trial_id, len(duplicated), duplicated[:10])
+        if seen[seed] == 2:
+            duplicate_seeds.append(seed)
+    if duplicate_seeds:
+        logger.warning(
+            "[%s] 有 %d 个 seed 重复: %s",
+            spec.trial_id,
+            len(duplicate_seeds),
+            duplicate_seeds[:10],
+        )
 
     ensure_table(conn, spec)
     _write_meta(conn, spec)
-    conn.executemany(
-        f"INSERT OR REPLACE INTO {spec.trial_id} (seed, {', '.join(spec.column_names)}) "
-        f"VALUES ({', '.join('?' * (len(spec.columns) + 1))})",
-        rows,
-    )
+
+    columns = spec.column_names
+    existing = {
+        row[0]: tuple(row[1:])
+        for row in conn.execute(
+            f"SELECT seed, {', '.join(columns)} FROM {spec.trial_id}"
+        )
+    }
+
+    inserted = 0
+    skipped = 0
+    conflicts: list[tuple[str, int, list[tuple[str, object, object]]]] = []
+    seen_excel: set[int] = set()
+
+    for seed, *codes in rows:
+        if seed in seen_excel:
+            continue
+        seen_excel.add(seed)
+
+        if seed not in existing:
+            conn.execute(
+                f"INSERT INTO {spec.trial_id} (seed, {', '.join(columns)}) "
+                f"VALUES ({', '.join('?' * (len(columns) + 1))})",
+                (seed, *codes),
+            )
+            inserted += 1
+            continue
+
+        local_values = existing[seed]
+        diffs = [
+            (column, local, incoming)
+            for column, local, incoming in zip(columns, local_values, codes)
+            if (None if local is None else str(local))
+            != (None if incoming is None else str(incoming))
+        ]
+        if diffs:
+            # 数据库为准：不覆盖，只记录冲突
+            conflicts.append((spec.trial_id, seed, diffs))
+        else:
+            skipped += 1
+
     conn.commit()
 
     total = conn.execute(f"SELECT COUNT(*) FROM {spec.trial_id}").fetchone()[0]
     incomplete = conn.execute(
         f"SELECT COUNT(*) FROM {spec.trial_id} WHERE "
-        + " OR ".join(f"{name} IS NULL" for name in spec.column_names)
+        + " OR ".join(f"{name} IS NULL" for name in columns)
     ).fetchone()[0]
 
     print(
-        f"[{spec.trial_id}] {spec.name_zh}: 入库 {len(rows)} 行，"
-        f"其中 {incomplete} 行有空格子，表内共 {total} 行"
+        f"[{spec.trial_id}] {spec.name_zh}: 新增 {inserted} 行，"
+        f"跳过 {skipped} 行（已存在且一致），冲突 {len(conflicts)} 行，"
+        f"表内共 {total} 行，其中 {incomplete} 行有空格子"
     )
     for index, seed, reason in gaps[:10]:
         print(f"  第 {index} 行 seed={seed} 存为 NULL: {reason}")
+
+    return inserted, skipped, conflicts
 
 
 def _select(ids: list[str]) -> tuple[TrialSpec, ...]:
@@ -462,11 +527,21 @@ def import_all(ids: list[str] | None = None, structure_only: bool = False) -> No
 
     with closing(sqlite3.connect(DB_PATH)) as conn:
         create_schema(conn)
+        conflicts: list[tuple[str, int, list[tuple[str, object, object]]]] = []
         for spec in specs:
             if structure_only:
                 register_only(conn, spec)
             else:
-                import_trial(conn, spec)
+                _inserted, _skipped, trial_conflicts = import_trial(conn, spec)
+                conflicts.extend(trial_conflicts)
+
+    if not structure_only:
+        report_path = DATA_DIR / "import_conflicts.txt"
+        if conflicts:
+            path = _write_import_conflicts(conflicts)
+            print(f"冲突报告: {path}")
+        else:
+            report_path.unlink(missing_ok=True)
 
     print(f"数据库: {DB_PATH}")
 
