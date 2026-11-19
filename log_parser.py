@@ -1,7 +1,8 @@
 """日志读取模块：定位游戏日志，取出最新的 Trial ID 和 Seed。
 
-UE 每次启动都会重写 OPP.log，单文件通常只有几 MB，所以直接整读最省事：
-一次 read() 加几毫秒，没必要为了这点时间写块倒查。
+UE 每次启动都会重写 OPP.log，日志基本只追加。为了不随日志总大小变慢，
+查询从文件末尾按块倒读，找到最近一局的 Trial ID / Seed / Stage 就停；
+只有末尾找不到时才逐步扩大窗口，最后才退回整读。
 
 日志里的两行关键信息长这样：
     RB:  GameStageInfo changed. Program ID: programHalloween, Trial ID: CHJ_MT02, ...
@@ -26,6 +27,7 @@ TRIAL_PATTERN = re.compile(r"Trial ID:\s*([A-Za-z0-9_]+)")
 STATE_PATTERN = re.compile(r"Trial ID:\s*([A-Za-z0-9_]+).{0,300}?Seed:\s*(\d+)")
 STAGE_PATTERN = re.compile(r"Stage:\s*([A-Za-z0-9_]+)")
 TRIAL_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
+TAIL_CHUNK = 1024 * 1024  # 先读最后 1 MB；不够再翻倍
 
 
 def get_log_dir() -> Path:
@@ -67,28 +69,73 @@ def find_latest_log() -> Path | None:
     return latest
 
 
-def _read_log_text(file_path: Path | str) -> str | None:
-    """整读日志文本；失败时记一条日志并返回 None。"""
+def _read_log_tail(file_path: Path | str, window: int) -> tuple[str, bool] | None:
+    """读文件末尾最多 window 字节，返回 (文本, 是否已到文件开头)。"""
+    path = Path(file_path)
     try:
-        return Path(file_path).read_text(encoding="utf-8", errors="replace")
+        size = path.stat().st_size
+        start = max(0, size - window)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            data = handle.read()
     except FileNotFoundError:
         logger.warning("日志文件不存在: %s", file_path)
-    except OSError as exc:  # 权限不足 / 文件正被游戏占用等
+        return None
+    except OSError as exc:
         logger.warning("读取日志失败 %s: %s", file_path, exc)
-    return None
+        return None
+
+    # 从块中间开始时可能截断 UTF-8 字符，errors="replace" 足够，不影响后面的 ASCII 字段
+    return data.decode("utf-8", errors="replace"), start == 0 or not data
+
+
+def _parse_game_text(text: str) -> tuple[str | None, str | None, str | None]:
+    """从一段日志文本里取最后一条 Trial ID / Seed 对，以及对应的 Stage。"""
+    pairs = STATE_PATTERN.findall(text)
+    if pairs:
+        trial_raw, seed_raw = pairs[-1]
+    else:
+        trial_matches = TRIAL_PATTERN.findall(text)
+        seed_matches = SEED_PATTERN.findall(text)
+        trial_raw = trial_matches[-1] if trial_matches else None
+        seed_raw = seed_matches[-1] if seed_matches else None
+
+    # Stage 和 Trial ID 通常在同一行；只从最后一条含 Trial ID 的行里取，
+    # 免得日志跨了多局时拿到别的关卡的地图名。
+    stage = None
+    for line in reversed(text.splitlines()):
+        if TRIAL_PATTERN.search(line) is None:
+            continue
+        match = STAGE_PATTERN.search(line)
+        stage = match.group(1) if match else None
+        break
+
+    return trial_raw, seed_raw, stage
+
+
+def _find_last_in_tail(
+    file_path: Path | str, pattern: re.Pattern[str], window: int = TAIL_CHUNK
+) -> str | None:
+    """从文件末尾向前扩大窗口，返回 pattern 最后一次匹配；找不到返回 None。"""
+    while True:
+        result = _read_log_tail(file_path, window)
+        if result is None:
+            return None
+        text, at_start = result
+        matches = pattern.findall(text)
+        if matches:
+            return matches[-1]
+        if at_start:
+            return None
+        window *= 2
 
 
 def extract_seed_from_log(file_path: Path | str) -> str | None:
     """读出日志里最后一个 Seed，返回它的原始数字串；没有则返回 None。"""
-    text = _read_log_text(file_path)
-    if text is None:
-        return None
-
-    matches = SEED_PATTERN.findall(text)
-    if not matches:
+    value = _find_last_in_tail(file_path, SEED_PATTERN)
+    if value is None:
         logger.warning("日志中没有 Seed: %s", file_path)
-        return None
-    return matches[-1]
+    return value
 
 
 def extract_trial_id_from_log(file_path: Path | str) -> str | None:
@@ -97,15 +144,10 @@ def extract_trial_id_from_log(file_path: Path | str) -> str | None:
     注意日志里 Trial ID 和 Mission 常常是同一个值（CHJ_MT02 / CHJ_MT02），
     这里只认 `Trial ID:` 这个字段，不要用 Mission 兜底。
     """
-    text = _read_log_text(file_path)
-    if text is None:
-        return None
-
-    matches = TRIAL_PATTERN.findall(text)
-    if not matches:
+    value = _find_last_in_tail(file_path, TRIAL_PATTERN)
+    if value is None:
         logger.warning("日志中没有 Trial ID: %s", file_path)
-        return None
-    return matches[-1]
+    return value
 
 
 def normalize_trial_id(raw: str | None) -> str | None:
@@ -178,8 +220,9 @@ def read_current_seed() -> str | None:
 
 
 def read_game_state() -> tuple[str | None, str | None, str | None]:
-    """一次整读日志，返回 (原始 Trial ID, 原始 Seed, Stage)。
+    """从日志末尾倒查，返回 (原始 Trial ID, 原始 Seed, Stage)。
 
+    默认只读最后 1 MB；找不到完整状态再翻倍扩大窗口，最后才退回整读。
     三个值都保持日志原样；Stage 取自最后一条含 Trial ID 的行，
     供登记 TRIAL_META.map_name 用。日志里没有 Stage 时返回 None。
     """
@@ -187,31 +230,16 @@ def read_game_state() -> tuple[str | None, str | None, str | None]:
     if log_file is None:
         return None, None, None
 
-    text = _read_log_text(log_file)
-    if text is None:
-        return None, None, None
-
-    pairs = STATE_PATTERN.findall(text)
-    if pairs:
-        trial_raw, seed_raw = pairs[-1]
-    else:
-        logger.info("没有同时含 Trial ID 与 Seed 的行，两者分别取最后一次出现")
-        trial_matches = TRIAL_PATTERN.findall(text)
-        seed_matches = SEED_PATTERN.findall(text)
-        trial_raw = trial_matches[-1] if trial_matches else None
-        seed_raw = seed_matches[-1] if seed_matches else None
-
-    # Stage 和 Trial ID 通常在同一行；只从最后一条含 Trial ID 的行里取，
-    # 免得日志跨了多局时拿到别的关卡的地图名。
-    stage = None
-    for line in reversed(text.splitlines()):
-        if TRIAL_PATTERN.search(line) is None:
-            continue
-        match = STAGE_PATTERN.search(line)
-        stage = match.group(1) if match else None
-        break
-
-    return trial_raw, seed_raw, stage
+    window = TAIL_CHUNK
+    while True:
+        result = _read_log_tail(log_file, window)
+        if result is None:
+            return None, None, None
+        text, at_start = result
+        trial_raw, seed_raw, stage = _parse_game_text(text)
+        if at_start or (trial_raw and seed_raw and stage):
+            return trial_raw, seed_raw, stage
+        window *= 2
 
 
 def read_current_state() -> tuple[str | None, str | None]:
