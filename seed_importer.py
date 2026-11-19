@@ -409,8 +409,14 @@ def register_only(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     print(f"[{spec.trial_id}] {spec.name_zh}: 仅登记结构，表内现有 {total} 行")
 
 
-def _show_value(value: object) -> str:
-    return "NULL" if value is None else str(value)
+def _show_conflict_value(value: object, choices: dict[str, str] | None) -> str:
+    """图案关的值按 choices 显示成中文；其它关保持原值。"""
+    if value is None:
+        return "NULL"
+    text = str(value)
+    if choices:
+        return choices.get(text, text)
+    return text
 
 
 def _same_multiset(left, right) -> bool:
@@ -421,14 +427,19 @@ def _same_multiset(left, right) -> bool:
     return normalize(left) == normalize(right)
 
 
-def _write_import_conflicts(conflicts: list[tuple[str, int, list[tuple[str, object, object]]]]) -> Path:
+def _write_import_conflicts(
+    conflicts: list[
+        tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]
+    ],
+) -> Path:
     path = DATA_DIR / "import_conflicts.txt"
     lines = ["# Excel 导入冲突（以数据库为准，未覆盖）", ""]
-    for level_name, seed, diffs in conflicts:
+    for level_name, choices, seed, diffs in conflicts:
         for column, local_value, excel_value in diffs:
             lines.append(
                 f"{level_name} seed={seed} {column}: "
-                f"数据库={_show_value(local_value)} Excel={_show_value(excel_value)}"
+                f"数据库={_show_conflict_value(local_value, choices)} "
+                f"Excel={_show_conflict_value(excel_value, choices)}"
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -436,7 +447,12 @@ def _write_import_conflicts(conflicts: list[tuple[str, int, list[tuple[str, obje
 
 def import_trial(
     conn: sqlite3.Connection, spec: TrialSpec
-) -> tuple[int, int, int, list[tuple[str, int, list[tuple[str, object, object]]]]]:
+) -> tuple[
+    int,
+    int,
+    int,
+    list[tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]],
+]:
     if spec.sheet is None:
         register_only(conn, spec)
         return 0, 0, 0, []
@@ -472,7 +488,9 @@ def import_trial(
     skipped = 0
     filled_rows = 0
     filled_fields = 0
-    conflicts: list[tuple[str, int, list[tuple[str, object, object]]]] = []
+    conflicts: list[
+        tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]
+    ] = []
     seen_excel: set[int] = set()
 
     for seed, *codes in rows:
@@ -525,7 +543,7 @@ def import_trial(
                 diffs = []
 
         if diffs:
-            conflicts.append((spec.name_zh or spec.trial_id, seed, diffs))
+            conflicts.append((spec.name_zh or spec.trial_id, spec.choices, seed, diffs))
         if not fills and not diffs:
             skipped += 1
 
@@ -568,7 +586,9 @@ def import_all(ids: list[str] | None = None, structure_only: bool = False) -> No
 
     with closing(sqlite3.connect(DB_PATH)) as conn:
         create_schema(conn)
-        conflicts: list[tuple[str, int, list[tuple[str, object, object]]]] = []
+        conflicts: list[
+            tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]
+        ] = []
         for spec in specs:
             if structure_only:
                 register_only(conn, spec)
