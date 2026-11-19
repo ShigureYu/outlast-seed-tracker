@@ -424,10 +424,10 @@ def _same_multiset(left, right) -> bool:
 def _write_import_conflicts(conflicts: list[tuple[str, int, list[tuple[str, object, object]]]]) -> Path:
     path = DATA_DIR / "import_conflicts.txt"
     lines = ["# Excel 导入冲突（以数据库为准，未覆盖）", ""]
-    for trial_id, seed, diffs in conflicts:
+    for level_name, seed, diffs in conflicts:
         for column, local_value, excel_value in diffs:
             lines.append(
-                f"{trial_id} seed={seed} {column}: "
+                f"{level_name} seed={seed} {column}: "
                 f"数据库={_show_value(local_value)} Excel={_show_value(excel_value)}"
             )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -525,7 +525,7 @@ def import_trial(
                 diffs = []
 
         if diffs:
-            conflicts.append((spec.trial_id, seed, diffs))
+            conflicts.append((spec.name_zh or spec.trial_id, seed, diffs))
         if not fills and not diffs:
             skipped += 1
 
