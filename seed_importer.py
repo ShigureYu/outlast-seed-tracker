@@ -425,10 +425,10 @@ def _write_import_conflicts(conflicts: list[tuple[str, int, list[tuple[str, obje
 
 def import_trial(
     conn: sqlite3.Connection, spec: TrialSpec
-) -> tuple[int, int, list[tuple[str, int, list[tuple[str, object, object]]]]]:
+) -> tuple[int, int, int, list[tuple[str, int, list[tuple[str, object, object]]]]]:
     if spec.sheet is None:
         register_only(conn, spec)
-        return 0, 0, []
+        return 0, 0, 0, []
 
     rows, gaps = load_rows(spec)
 
@@ -459,6 +459,8 @@ def import_trial(
 
     inserted = 0
     skipped = 0
+    filled_rows = 0
+    filled_fields = 0
     conflicts: list[tuple[str, int, list[tuple[str, object, object]]]] = []
     seen_excel: set[int] = set()
 
@@ -477,16 +479,33 @@ def import_trial(
             continue
 
         local_values = existing[seed]
-        diffs = [
-            (column, local, incoming)
-            for column, local, incoming in zip(columns, local_values, codes)
-            if (None if local is None else str(local))
-            != (None if incoming is None else str(incoming))
-        ]
+        fills: list[tuple[str, str]] = []
+        diffs: list[tuple[str, object, object]] = []
+        for column, local, incoming in zip(columns, local_values, codes):
+            local_text = None if local is None else str(local)
+            excel_text = None if incoming is None else str(incoming)
+            if local_text is None and excel_text is not None:
+                # 数据库缺、Excel 有：补空，不算冲突
+                fills.append((column, excel_text))
+            elif (
+                local_text is not None
+                and excel_text is not None
+                and local_text != excel_text
+            ):
+                # 数据库已有值且不同：数据库为准，记录冲突
+                diffs.append((column, local, incoming))
+
+        if fills:
+            assignments = ", ".join(f"{column}=?" for column, _ in fills)
+            conn.execute(
+                f"UPDATE {spec.trial_id} SET {assignments} WHERE seed=?",
+                [value for _, value in fills] + [seed],
+            )
+            filled_rows += 1
+            filled_fields += len(fills)
         if diffs:
-            # 数据库为准：不覆盖，只记录冲突
             conflicts.append((spec.trial_id, seed, diffs))
-        else:
+        if not fills and not diffs:
             skipped += 1
 
     conn.commit()
@@ -499,13 +518,14 @@ def import_trial(
 
     print(
         f"[{spec.trial_id}] {spec.name_zh}: 新增 {inserted} 行，"
-        f"跳过 {skipped} 行（已存在且一致），冲突 {len(conflicts)} 行，"
+        f"补空 {filled_rows} 行（{filled_fields} 个格子），"
+        f"跳过 {skipped} 行，冲突 {len(conflicts)} 行，"
         f"表内共 {total} 行，其中 {incomplete} 行有空格子"
     )
     for index, seed, reason in gaps[:10]:
         print(f"  第 {index} 行 seed={seed} 存为 NULL: {reason}")
 
-    return inserted, skipped, conflicts
+    return inserted, skipped, filled_rows, conflicts
 
 
 def _select(ids: list[str]) -> tuple[TrialSpec, ...]:
@@ -532,7 +552,7 @@ def import_all(ids: list[str] | None = None, structure_only: bool = False) -> No
             if structure_only:
                 register_only(conn, spec)
             else:
-                _inserted, _skipped, trial_conflicts = import_trial(conn, spec)
+                _inserted, _skipped, _filled, trial_conflicts = import_trial(conn, spec)
                 conflicts.extend(trial_conflicts)
 
     if not structure_only:
