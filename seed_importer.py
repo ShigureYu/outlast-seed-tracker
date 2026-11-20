@@ -41,6 +41,8 @@ from app_paths import DATA_DIR, XLSX_PATH, enable_utf8_stdout
 from slot_config import InputConfig, SlotSpec
 
 DB_PATH = DATA_DIR / "seed.db"  # 正式库，固定名字，故意不跟随 config.json
+# True = 冲突时以 Excel 为准，覆盖数据库里的非 NULL 值
+FORCE_EXCEL_OVERWRITE = False
 META_TABLE = "TRIAL_META"
 
 TRIAL_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
@@ -429,15 +431,22 @@ def _same_multiset(left, right) -> bool:
 
 def _write_import_conflicts(
     conflicts: list[
-        tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]
+        tuple[
+            str,
+            dict[str, str] | None,
+            int,
+            list[tuple[str, object, object]],
+            bool,
+        ]
     ],
 ) -> Path:
     path = DATA_DIR / "import_conflicts.txt"
-    lines = ["# Excel 导入冲突（以数据库为准，未覆盖）", ""]
-    for level_name, choices, seed, diffs in conflicts:
+    lines = ["# Excel 导入冲突", ""]
+    for level_name, choices, seed, diffs, overwritten in conflicts:
+        action = "（Excel 已覆盖）" if overwritten else "（保留数据库）"
         for column, local_value, excel_value in diffs:
             lines.append(
-                f"{level_name} seed={seed} {column}: "
+                f"{level_name} seed={seed} {column}{action}: "
                 f"数据库={_show_conflict_value(local_value, choices)} "
                 f"Excel={_show_conflict_value(excel_value, choices)}"
             )
@@ -446,16 +455,25 @@ def _write_import_conflicts(
 
 
 def import_trial(
-    conn: sqlite3.Connection, spec: TrialSpec
+    conn: sqlite3.Connection, spec: TrialSpec, excel_wins: bool = False
 ) -> tuple[
     int,
     int,
     int,
-    list[tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]],
+    int,
+    list[
+        tuple[
+            str,
+            dict[str, str] | None,
+            int,
+            list[tuple[str, object, object]],
+            bool,
+        ]
+    ],
 ]:
     if spec.sheet is None:
         register_only(conn, spec)
-        return 0, 0, 0, []
+        return 0, 0, 0, 0, []
 
     rows, gaps = load_rows(spec)
 
@@ -488,8 +506,16 @@ def import_trial(
     skipped = 0
     filled_rows = 0
     filled_fields = 0
+    overwritten_rows = 0
+    overwritten_fields = 0
     conflicts: list[
-        tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]
+        tuple[
+            str,
+            dict[str, str] | None,
+            int,
+            list[tuple[str, object, object]],
+            bool,
+        ]
     ] = []
     seen_excel: set[int] = set()
 
@@ -521,17 +547,8 @@ def import_trial(
                 and excel_text is not None
                 and local_text != excel_text
             ):
-                # 数据库已有值且不同：数据库为准，记录冲突
+                # 两边都有值但不同：默认数据库为准，可切换为 Excel 覆盖
                 diffs.append((column, local, incoming))
-
-        if fills:
-            assignments = ", ".join(f"{column}=?" for column, _ in fills)
-            conn.execute(
-                f"UPDATE {spec.trial_id} SET {assignments} WHERE seed=?",
-                [value for _, value in fills] + [seed],
-            )
-            filled_rows += 1
-            filled_fields += len(fills)
 
         if spec.order_insensitive:
             effective = list(local_values)
@@ -542,8 +559,30 @@ def import_trial(
                 # 例如 TSR：F,O,N 与 N,F,O 视为同一组答案
                 diffs = []
 
-        if diffs:
-            conflicts.append((spec.name_zh or spec.trial_id, spec.choices, seed, diffs))
+        updates = list(fills)
+        if excel_wins and diffs:
+            # Excel 权威：只覆盖两边都有值且不同的格子；Excel 为空仍保留数据库
+            updates.extend((column, incoming) for column, _local, incoming in diffs)
+            overwritten_rows += 1
+            overwritten_fields += len(diffs)
+            conflicts.append(
+                (spec.name_zh or spec.trial_id, spec.choices, seed, diffs, True)
+            )
+        elif diffs:
+            conflicts.append(
+                (spec.name_zh or spec.trial_id, spec.choices, seed, diffs, False)
+            )
+
+        if updates:
+            assignments = ", ".join(f"{column}=?" for column, _ in updates)
+            conn.execute(
+                f"UPDATE {spec.trial_id} SET {assignments} WHERE seed=?",
+                [value for _, value in updates] + [seed],
+            )
+            if fills:
+                filled_rows += 1
+                filled_fields += len(fills)
+
         if not fills and not diffs:
             skipped += 1
 
@@ -558,13 +597,14 @@ def import_trial(
     print(
         f"[{spec.trial_id}] {spec.name_zh}: 新增 {inserted} 行，"
         f"补空 {filled_rows} 行（{filled_fields} 个格子），"
+        f"覆盖 {overwritten_rows} 行（{overwritten_fields} 个格子），"
         f"跳过 {skipped} 行，冲突 {len(conflicts)} 行，"
         f"表内共 {total} 行，其中 {incomplete} 行有空格子"
     )
     for index, seed, reason in gaps[:10]:
         print(f"  第 {index} 行 seed={seed} 存为 NULL: {reason}")
 
-    return inserted, skipped, filled_rows, conflicts
+    return inserted, skipped, filled_rows, overwritten_rows, conflicts
 
 
 def _select(ids: list[str]) -> tuple[TrialSpec, ...]:
@@ -579,24 +619,43 @@ def _select(ids: list[str]) -> tuple[TrialSpec, ...]:
     return tuple(spec for spec in TRIALS if spec.trial_id in wanted)
 
 
-def import_all(ids: list[str] | None = None, structure_only: bool = False) -> None:
+def import_all(
+    ids: list[str] | None = None,
+    structure_only: bool = False,
+    excel_wins: bool = False,
+) -> None:
     specs = _select(ids or [])
+    excel_wins = excel_wins or FORCE_EXCEL_OVERWRITE
     if not structure_only and any(spec.sheet for spec in specs) and not XLSX_PATH.is_file():
         raise SystemExit(f"找不到表格: {XLSX_PATH}（只想建表可加 --register-only）")
 
     with closing(sqlite3.connect(DB_PATH)) as conn:
         create_schema(conn)
         conflicts: list[
-            tuple[str, dict[str, str] | None, int, list[tuple[str, object, object]]]
+            tuple[
+                str,
+                dict[str, str] | None,
+                int,
+                list[tuple[str, object, object]],
+                bool,
+            ]
         ] = []
         for spec in specs:
             if structure_only:
                 register_only(conn, spec)
             else:
-                _inserted, _skipped, _filled, trial_conflicts = import_trial(conn, spec)
+                (
+                    _inserted,
+                    _skipped,
+                    _filled,
+                    _overwritten,
+                    trial_conflicts,
+                ) = import_trial(conn, spec, excel_wins=excel_wins)
                 conflicts.extend(trial_conflicts)
 
     if not structure_only:
+        if excel_wins:
+            print("模式: Excel 覆盖数据库冲突值")
         report_path = DATA_DIR / "import_conflicts.txt"
         if conflicts:
             path = _write_import_conflicts(conflicts)
@@ -619,6 +678,11 @@ def main() -> None:
         action="store_true",
         help="不读 xlsx，只建表并写 TRIAL_META",
     )
+    parser.add_argument(
+        "--excel-wins",
+        action="store_true",
+        help="冲突时用 Excel 覆盖数据库的非 NULL 值",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -629,7 +693,11 @@ def main() -> None:
             )
         return
 
-    import_all(args.trial_ids, structure_only=args.register_only)
+    import_all(
+        args.trial_ids,
+        structure_only=args.register_only,
+        excel_wins=args.excel_wins,
+    )
 
 
 if __name__ == "__main__":
