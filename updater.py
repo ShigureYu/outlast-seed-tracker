@@ -35,13 +35,13 @@ META_TABLE = "TRIAL_META"
 @dataclass
 class Conflict:
     trial_id: str
-    seed: int
+    seed: int | None
     slot: str
     local: str | None
     remote: str | None
 
     @property
-    def key(self) -> tuple[str, int, str]:
+    def key(self) -> tuple[str, int | None, str]:
         return (self.trial_id, self.seed, self.slot)
 
 
@@ -87,6 +87,10 @@ def _tables(conn: sqlite3.Connection) -> list[str]:
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def _text(value) -> str | None:
+    return None if value is None else str(value)
 
 
 def fetch_remote(db_path: Path, url: str = REMOTE_DB_URL) -> Path | None:
@@ -179,29 +183,24 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
                 report.new_trials.append(row["trial_id"])
                 continue
 
-            # 已存在的关卡：meta 以远端为准（关卡名、labels 顺序都算配置）
+            # 已存在的关卡：meta 也只补不改；所有差异记录为冲突
             fields = [k for k in keys if k != "trial_id"]
             current = local.execute(
                 f"SELECT {', '.join(fields)} FROM {META_TABLE} WHERE trial_id=?",
                 (row["trial_id"],),
             ).fetchone()
-            changed = [
-                (name, current_value, row[name])
-                for name, current_value in zip(fields, current)
-                if current_value != row[name]
-            ]
-            if changed:
-                assignments = ", ".join(f"{name}=?" for name, _, _ in changed)
-                local.execute(
-                    f"UPDATE {META_TABLE} SET {assignments} WHERE trial_id=?",
-                    [new for _, _, new in changed] + [row["trial_id"]],
-                )
-                report.meta_updated += len(changed)
-                for name, old_value, new_value in changed:
-                    logger.info(
-                        "关卡配置更新 %s.%s: %r -> %r",
-                        row["trial_id"], name, old_value, new_value,
+            for name, current_value, remote_value in zip(fields, current, [row[k] for k in fields]):
+                if current_value == remote_value:
+                    continue
+                report.conflicts.append(
+                    Conflict(
+                        row["trial_id"],
+                        None,
+                        f"meta.{name}",
+                        _text(current_value),
+                        _text(remote_value),
                     )
+                )
 
         # 2) 每张答案表逐行比对
         for table in _tables(remote):
@@ -273,6 +272,9 @@ def apply_conflicts(
         for conflict in conflicts:
             if not use_remote.get(conflict.key):
                 continue
+            if conflict.seed is None:
+                # meta.* 冲突不在这里自动覆盖
+                continue
             has_time = "updated_at" in [
                 row[1] for row in local.execute(f"PRAGMA table_info({conflict.trial_id})")
             ]
@@ -316,8 +318,9 @@ def write_conflicts(db_path: Path, conflicts: list[Conflict]) -> Path:
         f"# {datetime.now().isoformat(timespec='seconds')}  共 {len(conflicts)} 处与仓库不同（本地值未改动）"
     ]
     for conflict in conflicts:
+        seed = "—" if conflict.seed is None else str(conflict.seed)
         lines.append(
-            f"{conflict.trial_id}\tseed={conflict.seed}\t{conflict.slot}\t"
+            f"{conflict.trial_id}\tseed={seed}\t{conflict.slot}\t"
             f"本地={conflict.local or '—'}\t仓库={conflict.remote or '—'}"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

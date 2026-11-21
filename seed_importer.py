@@ -356,9 +356,13 @@ def _build_input_config(spec: TrialSpec) -> InputConfig:
 def _write_meta(conn: sqlite3.Connection, spec: TrialSpec) -> None:
     input_config = _build_input_config(spec).to_json()
     conn.execute(
-        f"INSERT OR REPLACE INTO {META_TABLE} "
+        f"INSERT INTO {META_TABLE} "
         f"(trial_id, name_zh, map_name, input_config) "
-        f"VALUES (?, ?, ?, ?)",
+        f"VALUES (?, ?, ?, ?) "
+        f"ON CONFLICT(trial_id) DO UPDATE SET "
+        f"name_zh=excluded.name_zh, "
+        f"map_name=excluded.map_name, "
+        f"input_config=excluded.input_config",
         (spec.trial_id, spec.name_zh, spec.map_name, input_config),
     )
 

@@ -1491,13 +1491,18 @@ def _sync_only() -> int:
     report = updater.merge(remote, db_path)
     remote.unlink(missing_ok=True)
 
-    print(f"新增 {report.inserted} 条，配置更新 {report.meta_updated} 项，冲突 {len(report.conflicts)} 处")
+    meta_conflicts = sum(1 for c in report.conflicts if c.slot.startswith("meta."))
+    print(
+        f"新增 {report.inserted} 条，配置冲突 {meta_conflicts} 项，"
+        f"冲突 {len(report.conflicts)} 处"
+    )
     if report.conflicts:
         path = updater.write_conflicts(db_path, report.conflicts)
         print(f"冲突已写入: {path}")
         for conflict in report.conflicts[:10]:
+            seed = "—" if conflict.seed is None else conflict.seed
             print(
-                f"  seed={conflict.seed} {conflict.slot}: "
+                f"  seed={seed} {conflict.slot}: "
                 f"本地={conflict.local or '—'} 仓库={conflict.remote or '—'}"
             )
     return 0
