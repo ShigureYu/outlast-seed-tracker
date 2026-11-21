@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from history import is_history_table
+
 logger = logging.getLogger(__name__)
 
 REMOTE_DB_URL = (
@@ -76,7 +78,11 @@ def _tables(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     ).fetchall()
-    return [r[0] for r in rows if r[0] != META_TABLE]
+    return [
+        r[0]
+        for r in rows
+        if r[0] != META_TABLE and not is_history_table(r[0])
+    ]
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
