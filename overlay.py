@@ -1500,9 +1500,9 @@ def _sync_only() -> int:
         path = updater.write_conflicts(db_path, report.conflicts)
         print(f"冲突已写入: {path}")
         for conflict in report.conflicts[:10]:
-            seed = "—" if conflict.seed is None else conflict.seed
+            seed_text = "" if conflict.seed is None else f"seed={conflict.seed} "
             print(
-                f"  seed={seed} {conflict.slot}: "
+                f"  {seed_text}{conflict.slot}: "
                 f"本地={conflict.local or '—'} 仓库={conflict.remote or '—'}"
             )
     return 0

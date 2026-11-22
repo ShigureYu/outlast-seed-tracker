@@ -66,9 +66,9 @@ def merge(main_path: Path, test_path: Path) -> None:
         updater.write_conflicts(main_path, report.conflicts)
 
     for conflict in report.conflicts[:10]:
-        seed = "—" if conflict.seed is None else conflict.seed
+        seed_text = "" if conflict.seed is None else f"seed={conflict.seed} "
         print(
-            f"  值不同 seed={seed} {conflict.slot}: "
+            f"  值不同 {seed_text}{conflict.slot}: "
             f"主库={conflict.local or '—'} 测试库={conflict.remote or '—'}"
         )
     if len(report.conflicts) > 10:

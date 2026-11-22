@@ -318,11 +318,16 @@ def write_conflicts(db_path: Path, conflicts: list[Conflict]) -> Path:
         f"# {datetime.now().isoformat(timespec='seconds')}  共 {len(conflicts)} 处与仓库不同（本地值未改动）"
     ]
     for conflict in conflicts:
-        seed = "—" if conflict.seed is None else str(conflict.seed)
-        lines.append(
-            f"{conflict.trial_id}\tseed={seed}\t{conflict.slot}\t"
-            f"本地={conflict.local or '—'}\t仓库={conflict.remote or '—'}"
-        )
+        if conflict.seed is None:
+            lines.append(
+                f"{conflict.trial_id}\t{conflict.slot}\t"
+                f"本地={conflict.local or '—'}\t仓库={conflict.remote or '—'}"
+            )
+        else:
+            lines.append(
+                f"{conflict.trial_id}\tseed={conflict.seed}\t{conflict.slot}\t"
+                f"本地={conflict.local or '—'}\t仓库={conflict.remote or '—'}"
+            )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     logger.info("冲突已写入 %s", path)
     return path
