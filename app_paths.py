@@ -38,7 +38,13 @@ APP_DIR = _app_dir()
 DATA_DIR = APP_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
 XLSX_PATH = DATA_DIR / "seed.xlsx"
+TRIAL_INFO_DIR = _bundle_dir() / "data" / "trial_info"
 DEFAULT_DB_NAME = "seed.db"
+
+
+def trial_info_path(trial_id: str) -> Path:
+    """关卡额外配置路径：data/trial_info/<trial_id小写>.json。"""
+    return TRIAL_INFO_DIR / f"{trial_id.lower()}.json"
 
 DEFAULT_CONFIG = {
     "database": DEFAULT_DB_NAME,

@@ -1,0 +1,114 @@
+{
+    "target": [
+        "杯子",
+        "闹钟",
+        "苹果",
+        "书",
+        "玩具熊",
+        "牙膏",
+        "哑铃",
+        "扫把"
+    ],
+    "location": [
+        {
+            "floor_en": "START",
+            "floor_cn": "起点",
+            "rooms": [
+                {
+                    "room_en": "HOURGLASS",
+                    "room_cn": "沙漏"
+                }
+            ]
+        },
+        {
+            "floor_en": "BASEMENT",
+            "floor_cn": "地下室",
+            "rooms": [
+                {
+                    "room_en": "CARROTS STORAGE",
+                    "room_cn": "胡萝卜储藏室"
+                },
+                {
+                    "room_en": "RABBIT BEDROOM",
+                    "room_cn": "兔子卧室"
+                },
+                {
+                    "room_en": "RABBIT DINNER",
+                    "room_cn": "兔子餐厅"
+                },
+                {
+                    "room_en": "RABBIT TORTURE",
+                    "room_cn": "兔子刑房"
+                }
+            ]
+        },
+        {
+            "floor_en": "FLOOR_1",
+            "floor_cn": "一楼",
+            "rooms": [
+                {
+                    "room_en": "KITCHEN STORAGE",
+                    "room_cn": "厨房储藏室"
+                },
+                {
+                    "room_en": "LIBRARY",
+                    "room_cn": "图书馆"
+                },
+                {
+                    "room_en": "QUEEN THRONE",
+                    "room_cn": "女王的王座"
+                },
+                {
+                    "room_en": "SPACE STATION",
+                    "room_cn": "空间站"
+                },
+                {
+                    "room_en": "STORM",
+                    "room_cn": "风暴"
+                },
+                {
+                    "room_en": "UPSIDE CHURCH",
+                    "room_cn": "倒置教堂"
+                },
+                {
+                    "room_en": "UPSIDE STORM",
+                    "room_cn": "倒置风暴"
+                },
+                {
+                    "room_en": "WALL OF HANDS",
+                    "room_cn": "手掌之墙"
+                }
+            ]
+        },
+        {
+            "floor_en": "FLOOR_2",
+            "floor_cn": "二楼",
+            "rooms": [
+                {
+                    "room_en": "CHILD ROOM",
+                    "room_cn": "儿童房"
+                },
+                {
+                    "room_en": "CHURCH",
+                    "room_cn": "教堂"
+                },
+                {
+                    "room_en": "ILLUSION CUBE",
+                    "room_cn": "幻觉立方体"
+                },
+                {
+                    "room_en": "ILLUSION DINNER",
+                    "room_cn": "幻觉餐厅"
+                },
+                {
+                    "room_en": "SHOW ROOM",
+                    "room_cn": "展厅"
+                },
+                {
+                    "room_en": "WALL OF EYES",
+                    "room_cn": "眼睛之墙"
+                }
+            ]
+        }
+    ]
+}

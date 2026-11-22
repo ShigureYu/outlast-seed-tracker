@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from pathlib import Path
 
 HISTORY_SUFFIX = "_HISTORY"
+DEV_DB_NAME = "seed_full.db"
+
+
+def is_dev_db(db_path: Path | str) -> bool:
+    return Path(db_path).name.lower() == DEV_DB_NAME
 
 
 def history_table_name(trial_id: str) -> str:
@@ -45,9 +51,11 @@ def ensure_history_table(
 
 
 __all__ = [
+    "DEV_DB_NAME",
     "HISTORY_SUFFIX",
     "ensure_history_table",
     "history_table_name",
+    "is_dev_db",
     "is_history_table",
     "new_change_id",
 ]

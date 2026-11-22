@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import sys
 
 if sys.platform == "win32":
@@ -53,10 +54,12 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
 
+import fpi_mt02
 import updater
 from app_paths import (
     DB_PATH,
@@ -64,6 +67,7 @@ from app_paths import (
     ensure_database,
     load_config,
 )
+from fpi_mt02_view import FPI_MT02View
 from log_parser import (
     find_latest_log,
     normalize_seed,
@@ -72,6 +76,7 @@ from log_parser import (
 )
 from seed_lookup import describe_trial, read_codes, register_trial_from_log, save_codes
 from slot_config import SlotSpec
+from trial_info import load_trial_info
 
 logger = logging.getLogger(__name__)
 
@@ -485,10 +490,16 @@ class Overlay(QWidget):
         # ---- 中部数据区 ----
         self.body = QWidget(self)
         self.body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.grid = QGridLayout(self.body)
+        self.body_stack = QStackedLayout(self.body)
+        self.body_stack.setContentsMargins(0, 0, 0, 0)
+        self.grid_host = QWidget()
+        self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(10)
         self.grid.setVerticalSpacing(6)
+        self.body_stack.addWidget(self.grid_host)
+        self.body_stack.setCurrentWidget(self.grid_host)
+        self._fpi_view: FPI_MT02View | None = None
         root.addWidget(self.body)
 
         # ---- 底部操作区 ----
@@ -621,6 +632,13 @@ class Overlay(QWidget):
             self._fit()
             return
 
+        if trial == fpi_mt02.TRIAL_ID:
+            self._set_trial_text(info["name_zh"] or info["map_name"] or info["trial_id"])
+            self._render_fpi_mt02(seed)
+            self._set_editing(False)
+            self._fit()
+            return
+
         # 中文名还没录入时退到地图名，至少能看出是哪一关
         self._set_trial_text(info["name_zh"] or info["map_name"] or info["trial_id"])
 
@@ -651,6 +669,10 @@ class Overlay(QWidget):
         if self._picker is not None:
             self._picker.close()
             self._picker = None
+        if self._fpi_view is not None:
+            self.body_stack.removeWidget(self._fpi_view)
+            self._fpi_view.deleteLater()
+            self._fpi_view = None
         while self.grid.count():
             item = self.grid.takeAt(0)
             widget = item.widget()
@@ -660,6 +682,24 @@ class Overlay(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self._inputs = {}
+        self.body_stack.setCurrentWidget(self.grid_host)
+
+    def _render_fpi_mt02(self, seed: int) -> None:
+        try:
+            info = load_trial_info(fpi_mt02.TRIAL_ID)
+            entries = fpi_mt02.read_turns(seed)
+        except (OSError, ValueError) as exc:
+            logger.exception("加载 FPI_MT02 配置失败")
+            self._set_hint(f"FPI_MT02 配置错误: {exc}", error=True)
+            return
+
+        view = FPI_MT02View(info)
+        view.set_data(entries)
+        view.set_readonly(True)
+        view.editRequested.connect(self.begin_edit)
+        self._fpi_view = view
+        self.body_stack.addWidget(view)
+        self.body_stack.setCurrentWidget(view)
 
     def _render_rows(
         self,
@@ -897,8 +937,9 @@ class Overlay(QWidget):
         self._apply_collapsed()
 
     def _body_has_content(self) -> bool:
-        layout = self.body.layout()
-        return layout is not None and layout.count() > 0
+        if self._fpi_view is not None:
+            return True
+        return self.grid.count() > 0
 
     def _apply_collapsed(self) -> None:
         show_body = (not self._collapsed) and self._body_has_content()
@@ -986,6 +1027,10 @@ class Overlay(QWidget):
         self.footer.setVisible(True)
         self.save_button.setVisible(editing and not self._collapsed)
         self.cancel_button.setVisible(editing and not self._collapsed)
+        if self._fpi_view is not None:
+            self._fpi_view.set_readonly(not editing)
+            if editing and focus:
+                self._fpi_view.focus_first()
         if editing and focus:
             # 只有用户双击进入编辑时才抢焦点，自动刷新时绝不抢，
             # 否则会把游戏窗口的焦点顶掉（表现为切回游戏卡一下、鼠标跑到悬浮窗）
@@ -1129,6 +1174,11 @@ class Overlay(QWidget):
         return super().eventFilter(obj, event)
 
     def begin_edit(self) -> None:
+        if self._trial == fpi_mt02.TRIAL_ID:
+            if self._fpi_view is None:
+                return
+            self._set_editing(True, focus=True)
+            return
         info = describe_trial(self._trial) if self._trial else None
         if info is None or not info["slots"]:
             return
@@ -1148,6 +1198,10 @@ class Overlay(QWidget):
     # ---------- 保存 ----------
     def save(self) -> None:
         if self._trial is None or self._seed is None:
+            return
+
+        if self._trial == fpi_mt02.TRIAL_ID:
+            self._save_fpi_mt02()
             return
 
         codes: dict[str, str | None] = {}
@@ -1184,6 +1238,21 @@ class Overlay(QWidget):
 
         self._editing_existing = False
         # 立刻按库里读回来的值重建，避免界面显示"看起来成功"的假象
+        self.refresh(force=True)
+        self._set_hint("已保存")
+
+    def _save_fpi_mt02(self) -> None:
+        if self._fpi_view is None or self._seed is None:
+            return
+        try:
+            entries = self._fpi_view.entries()
+            fpi_mt02.save_turns(self._seed, entries)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            logger.exception("FPI_MT02 保存失败")
+            self._set_hint(f"保存失败: {exc}", error=True)
+            return
+
+        self._editing_existing = False
         self.refresh(force=True)
         self._set_hint("已保存")
 

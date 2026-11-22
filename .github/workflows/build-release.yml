@@ -36,7 +36,7 @@ jobs:
       - name: Build exe
         # data/seed.db 一并塞进 exe：首次运行时自动释放到 exe 旁边，
         # 所以用户在 Release 里下载单个 exe 就能直接跑。
-        run: python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay --add-data "data/seed.db;data" overlay.py
+        run: python -m PyInstaller --noconfirm --onefile --windowed --name OPPOverlay --add-data "data/seed.db;data" --add-data "data/trial_info;data/trial_info" overlay.py
 
       - name: Smoke test
         shell: pwsh
@@ -75,6 +75,7 @@ jobs:
             | 侦破谋杀案（RES_MT01） | 凶手 / 凶器 / 房间 | 1 位 |
             | 清空保险库（MHS_MT01） | 三角形 / 骷髅 / 太阳·五角星 | 3 位 |
             | 蛊惑孩童（FPI_MT01） | 图案1～图案4，每位从 9 个图案中选 | 1 位/格 |
+            | 赢得真相（FPI_MT02） | 第 2/3 轮：房间 + 图案 + 数字，每轮最多 4 条 | 1–9 |
             | 取消广播（TSR_MT01） | 前 3 位字母 A-O；后 3 位数字 01-25 | 1 位/格、2 位/格 |
 
             其它关卡会通过数据更新陆续加入：不需要重新下载 exe，启动时会自动同步。
