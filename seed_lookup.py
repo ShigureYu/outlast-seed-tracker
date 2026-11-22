@@ -30,13 +30,7 @@ from log_parser import normalize_trial_id, read_current_seed, read_current_state
 
 logger = logging.getLogger(__name__)
 
-from app_paths import (
-    DATA_DIR,
-    DB_PATH,
-    DEFAULT_DB_NAME,
-    enable_utf8_stdout,
-    ensure_database,
-)
+from app_paths import DB_PATH, enable_utf8_stdout, ensure_database
 from slot_config import InputConfig, SlotSpec
 
 # 表名会拼进 SQL，所以必须白名单：只允许 CHJ_MT02 这种形态
@@ -161,8 +155,8 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _is_main_db(db_path: Path | str) -> bool:
-    return Path(db_path).resolve() == (DATA_DIR / DEFAULT_DB_NAME).resolve()
+def _is_dev_db(db_path: Path | str) -> bool:
+    return Path(db_path).name.lower() == "seed_full.db"
 
 
 def _replace_trial_row(
@@ -266,7 +260,7 @@ def save_codes(
     空字符串、None 都存成 NULL——"这个图案没看到"和"密码是空"不是一回事，
     和 seed_importer.py 的约定保持一致。
 
-    只有测试库会记录修改历史；主库完全跳过历史模块。
+    只有开发者完整库 seed_full.db 会记录修改历史；主库完全跳过历史模块。
     """
     trial = resolve_trial_id(trial_id)
     if trial is None:
@@ -291,14 +285,14 @@ def save_codes(
         has_time = "updated_at" in _table_columns(conn, trial)
         now = _now()
 
-        if _is_main_db(db_path):
-            # 用户主库：只更新主表，不导入/调用 history
+        if not _is_dev_db(db_path):
+            # 主库/旧测试库：只更新主表，不导入/调用 history
             _replace_trial_row(conn, trial, seed_value, columns, values, has_time, now)
             conn.commit()
             return
 
         if not has_time:
-            raise ValueError(f"测试库表 {trial} 缺少 updated_at，无法记录历史")
+            raise ValueError(f"开发库表 {trial} 缺少 updated_at，无法记录历史")
 
         from history import ensure_history_table, new_change_id
 

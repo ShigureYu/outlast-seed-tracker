@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 from app_paths import DATA_DIR, XLSX_PATH, enable_utf8_stdout
 from slot_config import InputConfig, SlotSpec
 
-DB_PATH = DATA_DIR / "seed.db"  # 正式库，固定名字，故意不跟随 config.json
+DB_PATH = DATA_DIR / "seed_full.db"  # 开发者完整库；发布模板由 tools/build_empty_db.py 生成
 # True = 冲突时以 Excel 为准，覆盖数据库里的非 NULL 值
 FORCE_EXCEL_OVERWRITE = False
 META_TABLE = "TRIAL_META"
@@ -627,13 +627,15 @@ def import_all(
     ids: list[str] | None = None,
     structure_only: bool = False,
     excel_wins: bool = False,
+    db_path: Path | str | None = None,
 ) -> None:
     specs = _select(ids or [])
     excel_wins = excel_wins or FORCE_EXCEL_OVERWRITE
+    target = Path(db_path) if db_path is not None else DB_PATH
     if not structure_only and any(spec.sheet for spec in specs) and not XLSX_PATH.is_file():
         raise SystemExit(f"找不到表格: {XLSX_PATH}（只想建表可加 --register-only）")
 
-    with closing(sqlite3.connect(DB_PATH)) as conn:
+    with closing(sqlite3.connect(target)) as conn:
         create_schema(conn)
         conflicts: list[
             tuple[
@@ -667,7 +669,7 @@ def import_all(
         else:
             report_path.unlink(missing_ok=True)
 
-    print(f"数据库: {DB_PATH}")
+    print(f"数据库: {target}")
 
 
 def main() -> None:
@@ -687,6 +689,11 @@ def main() -> None:
         action="store_true",
         help="冲突时用 Excel 覆盖数据库的非 NULL 值",
     )
+    parser.add_argument(
+        "--db",
+        default=str(DB_PATH),
+        help="目标数据库；默认 data/seed_full.db",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -701,6 +708,7 @@ def main() -> None:
         args.trial_ids,
         structure_only=args.register_only,
         excel_wins=args.excel_wins,
+        db_path=args.db,
     )
 
 

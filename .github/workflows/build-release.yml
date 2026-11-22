@@ -27,11 +27,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyqt6 pyinstaller
 
-      - name: Verify bundled database
+      - name: Verify empty template database
         shell: pwsh
         run: |
           if (-not (Test-Path 'data\seed.db')) { throw "仓库里缺少 data/seed.db" }
-          python -c "import sqlite3;c=sqlite3.connect('data/seed.db');print('答案行数:', c.execute('SELECT COUNT(*) FROM CHJ_MT02').fetchone()[0]);c.close()"
+          python tools/verify_empty_db.py --db data/seed.db
 
       - name: Build exe
         # data/seed.db 一并塞进 exe：首次运行时自动释放到 exe 旁边，
@@ -102,14 +102,15 @@ jobs:
 
             ## 数据更新
 
-            启动时会从仓库拉取 `data/seed.db` 并合并：
-            - 只补本地没有的记录，**不会覆盖**你已有的值；
-            - 同一 seed 两边不同时只提示一次，明细写在 `data/conflicts.txt`。
+            启动时会从仓库拉取 `data/seed.db`，它只包含 `TRIAL_META` 和空表结构：
+            - 不下载、不插入、不覆盖任何答案行；
+            - 你的录入答案只保存在本地；
+            - 关卡配置差异写入 `data/conflicts.txt`。
 
             游戏需使用**无边框窗口**模式，独占全屏下悬浮窗可能不显示。
 
             ## 免责声明
 
-            本项目仅为个人学习 Python GUI 开发与日志解析的练手之作，附带数据库由朋友个人手动收集，
-            仅供私下小范围交流测试，不保证数据准确性，请勿用于商业用途或公开传播。
+            本项目仅为个人学习 Python GUI 开发与日志解析的练手之作，
+            不保证数据准确性，请勿用于商业用途或公开传播。
             若权利方认为本项目侵权，请联系我，我会立即删除。

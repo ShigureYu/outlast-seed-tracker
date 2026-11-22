@@ -202,59 +202,24 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
                     )
                 )
 
-        # 2) 每张答案表逐行比对
+        # 2) 只补空表结构，不复制任何答案行
         for table in _tables(remote):
             columns = _columns(remote, table)
             if not columns or "seed" not in columns:
                 continue
 
-            if not local.execute(
+            exists = local.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-            ).fetchone():
-                create = remote.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
-                ).fetchone()[0]
-                local.execute(create)
-                if table not in report.new_trials:
-                    report.new_trials.append(table)
-
-            local_columns = _columns(local, table)
-            missing = set(columns) - set(local_columns)
-            if missing == {"updated_at"}:
-                # 老库没有审计列：补上就行，没必要因此拒绝整张表
-                local.execute(f"ALTER TABLE {table} ADD COLUMN updated_at TEXT")
-                local_columns = _columns(local, table)
-                missing = set()
-            if missing:
-                logger.warning("本地表 %s 缺少列 %s，跳过", table, sorted(missing))
+            ).fetchone()
+            if exists:
                 continue
 
-            # updated_at 只做审计，不参与值比对，否则每行都会报冲突
-            palette = [c for c in columns if c not in ("seed", "updated_at")]
-            for row in remote.execute(f"SELECT {', '.join(columns)} FROM {table}"):
-                seed = row["seed"]
-                current = local.execute(
-                    f"SELECT {', '.join(palette)} FROM {table} WHERE seed=?", (seed,)
-                ).fetchone()
-
-                if current is None:
-                    local.execute(
-                        f"INSERT INTO {table} ({', '.join(columns)}) "
-                        f"VALUES ({', '.join('?' * len(columns))})",
-                        tuple(row[c] for c in columns),
-                    )
-                    report.inserted += 1
-                    continue
-
-                for slot in palette:
-                    remote_value = row[slot]
-                    local_value = current[slot]
-                    if remote_value == local_value:
-                        report.skipped += 1
-                    else:
-                        report.conflicts.append(
-                            Conflict(table, seed, slot, local_value, remote_value)
-                        )
+            create = remote.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()[0]
+            local.execute(create)
+            if table not in report.new_trials:
+                report.new_trials.append(table)
 
         local.commit()
 

@@ -60,7 +60,6 @@ from PyQt6.QtWidgets import (
 import updater
 from app_paths import (
     DB_PATH,
-    DEFAULT_DB_NAME,
     enable_utf8_stdout,
     ensure_database,
     load_config,
@@ -416,7 +415,7 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowTitle("OPP Overlay")
-        self._test_db = DB_PATH.name != DEFAULT_DB_NAME
+        self._dev_db = DB_PATH.name.lower() == "seed_full.db"
         self.setMinimumWidth(MIN_WINDOW_WIDTH)
         self.setStyleSheet(STYLE)
 
@@ -461,11 +460,11 @@ class Overlay(QWidget):
         self.refresh_button.clicked.connect(self._manual_refresh)
 
         # 用的不是正式库时给个显眼标记，避免忘了自己在沙盒里
-        self.db_badge = QLabel("测试")
+        self.db_badge = QLabel("dev")
         self.db_badge.setObjectName("badge")
         self.db_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.db_badge.setToolTip(f"当前数据库：{DB_PATH.name}")
-        self.db_badge.setVisible(self._test_db)
+        self.db_badge.setToolTip(f"开发数据库：{DB_PATH.name}")
+        self.db_badge.setVisible(self._dev_db)
 
         self.close_button = ClickableLabel("×")
         self.close_button.setObjectName("close")
@@ -1053,6 +1052,8 @@ class Overlay(QWidget):
             parts.append(f"新增 {report.inserted} 条")
         if report.meta_updated:
             parts.append(f"配置 {report.meta_updated} 项")
+        if report.new_trials:
+            parts.append(f"新建空表 {len(report.new_trials)} 个")
 
         if report.conflicts:
             # 冲突文件每次都刷新，但同一批冲突只提示一次
@@ -1070,7 +1071,7 @@ class Overlay(QWidget):
 
         self._force_notice = False
         self._show_notice("同步完成：" + "、".join(parts), 8000)
-        if report.inserted or report.meta_updated:
+        if report.inserted or report.meta_updated or report.new_trials:
             self.refresh(force=True)
 
     def _show_notice(self, text: str, auto_hide_ms: int = 0) -> None:
