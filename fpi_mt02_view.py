@@ -340,6 +340,9 @@ class FPI_MT02View(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setObjectName("fpiTabs")
         self.tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        tab_bar = self.tabs.tabBar()
+        tab_bar.setExpanding(True)
+        tab_bar.setUsesScrollButtons(False)
 
         for turn in TURNS:
             tab = QWidget()
@@ -376,6 +379,17 @@ class FPI_MT02View(QWidget):
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
+
+    def _sync_tab_bar_width(self) -> None:
+        self.tabs.tabBar().setMinimumWidth(self.tabs.width())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_tab_bar_width()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_tab_bar_width()
 
     def set_data(self, data: dict[int, tuple[Entry, ...]]) -> None:
         for turn, rows in self._rows.items():
