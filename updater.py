@@ -138,21 +138,8 @@ def merge(remote_path: Path, local_path: Path) -> MergeReport:
         remote.row_factory = sqlite3.Row
         local.row_factory = sqlite3.Row
 
-        # 安全阀：远端表明显比本地小，通常是远端被截断/误删，不能合并
-        for table in _tables(remote):
-            if not local.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-            ).fetchone():
-                continue
-            remote_count = remote.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            local_count = local.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            if local_count > 20 and remote_count < local_count * 0.5:
-                report.refused = True
-                report.reason = (
-                    f"{table} 远端只有 {remote_count} 行，本地有 {local_count} 行"
-                )
-                logger.warning("拒绝合并：%s", report.reason)
-                return report
+        # 只同步 META；答案表行数不再参与安全阀判断。
+        # schema 补表逻辑仍在下面，只给本地缺表补空结构。
 
         # 1) 关卡元信息：缺的补上
         # 老库可能没有后来新增的 meta 列（例如 choices），先按远端结构补齐
