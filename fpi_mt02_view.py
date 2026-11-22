@@ -33,6 +33,7 @@ class FloorRoomPicker(QWidget):
         self._info = info
         self._room: Room | None = None
         self._readonly = False
+        self._unavailable_rooms: set[str] = set()
 
         self.button = QPushButton("选择房间")
         self.button.setObjectName("fpiPicker")
@@ -120,6 +121,10 @@ class FloorRoomPicker(QWidget):
         for room in floor.rooms:
             item = QListWidgetItem(room.cn)
             item.setData(Qt.ItemDataRole.UserRole, room)
+            if room.en in self._unavailable_rooms:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setForeground(QColor("#6f747e"))
+                item.setToolTip("该房间在本轮已被其他行选择，不能重复")
             self.room_list.addItem(item)
 
     def _show_popup(self) -> None:
@@ -138,12 +143,19 @@ class FloorRoomPicker(QWidget):
         self.floor_list.setFocus()
 
     def _choose_room(self, item: QListWidgetItem) -> None:
+        if not item.flags() & Qt.ItemFlag.ItemIsEnabled:
+            return
         room = item.data(Qt.ItemDataRole.UserRole)
         if room is None:
             return
         self.set_room(room)
         self.popup.hide()
         self.roomChanged.emit(room)
+
+    def set_unavailable_rooms(self, room_names: set[str]) -> None:
+        self._unavailable_rooms = set(room_names)
+        if self.popup.isVisible() and self.floor_list.currentRow() >= 0:
+            self._load_rooms(self.floor_list.currentRow())
 
 
 class PatternPicker(QWidget):
@@ -245,6 +257,7 @@ class PatternPicker(QWidget):
 
 class EntryRow(QWidget):
     editRequested = pyqtSignal()
+    roomChanged = pyqtSignal(object)
 
     def __init__(self, info: TrialInfo, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -254,6 +267,7 @@ class EntryRow(QWidget):
 
         self.picker = FloorRoomPicker(info)
         self.picker.roomChanged.connect(self._on_room_changed)
+        self.picker.roomChanged.connect(self.roomChanged.emit)
         self.pattern = PatternPicker(info)
 
         self.number = QLineEdit()
@@ -385,6 +399,11 @@ class FPI_MT02View(QWidget):
             for row_index in range(4):
                 row = EntryRow(info)
                 row.editRequested.connect(self.editRequested)
+                row.roomChanged.connect(
+                    lambda _room, current_turn=turn: self._refresh_room_availability(
+                        current_turn
+                    )
+                )
                 rows.append(row)
                 grid.addWidget(row, row_index + 1, 0, 1, 3)
             self._rows[turn] = rows
@@ -413,6 +432,20 @@ class FPI_MT02View(QWidget):
             entries = data.get(turn, ())
             for index, row in enumerate(rows):
                 row.set_entry(entries[index] if index < len(entries) else None)
+        for turn in self._rows:
+            self._refresh_room_availability(turn)
+
+    def _refresh_room_availability(self, turn: int) -> None:
+        rows = self._rows.get(turn, [])
+        selected = {
+            row.picker.room().en
+            for row in rows
+            if row.picker.room() is not None
+        }
+        for row in rows:
+            own = row.picker.room()
+            unavailable = selected - ({own.en} if own is not None else set())
+            row.picker.set_unavailable_rooms(unavailable)
 
     def entries(self) -> dict[int, tuple[Entry, ...]]:
         result: dict[int, tuple[Entry, ...]] = {}
