@@ -49,9 +49,23 @@ def trial_info_path(trial_id: str) -> Path:
 DEFAULT_CONFIG = {
     "database": DEFAULT_DB_NAME,
     "poll_seconds": 60,
+    "shortcuts": {
+        "toggle_interactive": "Alt+B",
+        "refresh_global": "Alt+N",
+        "refresh_window": "F5",
+        "force_save": "Ctrl+Return",
+        "sync": "Ctrl+F5",
+    },
     "_help": {
         "database": "答案库文件名（相对 data/ 目录）。测试可用 seed_local.db",
         "poll_seconds": "扫描游戏日志的间隔秒数",
+        "shortcuts": {
+            "toggle_interactive": "全局：进入交互模式并自动编辑",
+            "refresh_global": "全局：刷新当前日志",
+            "refresh_window": "窗口：刷新当前日志",
+            "force_save": "窗口：强制保存",
+            "sync": "窗口：立即同步远端数据",
+        },
     },
 }
 
@@ -79,6 +93,13 @@ def load_config() -> dict:
 
     merged = dict(DEFAULT_CONFIG)
     merged.update(parsed)
+    shortcuts = dict(DEFAULT_CONFIG["shortcuts"])
+    raw_shortcuts = parsed.get("shortcuts")
+    if isinstance(raw_shortcuts, dict):
+        shortcuts.update(raw_shortcuts)
+    elif "shortcuts" in parsed:
+        logger.warning("config.json 的 shortcuts 不是对象，使用默认快捷键")
+    merged["shortcuts"] = shortcuts
     return merged
 
 

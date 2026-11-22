@@ -2,7 +2,7 @@
 
 刷新策略：
 - 每 60 秒扫一次日志，只有 (Trial ID, Seed) 变了才重建界面，避免打字被冲掉；
-- 录入过程中暂停自动刷新；F5 / 全局 Alt+N 或点 ⟳ 可以手动刷新。
+- 录入过程中暂停自动刷新；窗口/全局刷新快捷键或点 ⟳ 可以手动刷新。
 
 状态（从上到下三个区）：
 - 顶部：始终显示 Seed；库里有这张表时，旁边补上「中文名 CHJ_MT02」。
@@ -38,7 +38,6 @@ from PyQt6.QtGui import (
     QColor,
     QCursor,
     QFont,
-    QKeySequence,
     QPainter,
     QRegularExpressionValidator,
     QShortcut,
@@ -75,6 +74,13 @@ from log_parser import (
     read_game_state,
 )
 from seed_lookup import describe_trial, read_codes, register_trial_from_log, save_codes
+from shortcuts import (
+    ACTION_LABELS,
+    GLOBAL_ACTIONS,
+    default_shortcut,
+    load_shortcuts,
+    to_win32_hotkey,
+)
 from slot_config import SlotSpec
 from trial_info import load_trial_info
 
@@ -86,10 +92,7 @@ MIN_WINDOW_WIDTH = 300
 MAX_WINDOW_WIDTH = 560
 
 # Windows 全局热键 / 鼠标穿透
-HOTKEY_ID_TOGGLE = 0x4F50
-HOTKEY_ID_REFRESH = 0x4F51
-MOD_ALT = 0x0001
-MOD_NOREPEAT = 0x4000
+HOTKEY_BASE_ID = 0x4F50
 WM_HOTKEY = 0x0312
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
@@ -564,6 +567,9 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowTitle("OPP Overlay")
         self._dev_db = DB_PATH.name.lower() == "seed_full.db"
+        self._config = load_config()
+        self._shortcuts, self._shortcut_warnings = load_shortcuts(self._config)
+        self._window_shortcuts: dict[str, QShortcut] = {}
         self.setMinimumWidth(MIN_WINDOW_WIDTH)
         self.setStyleSheet(STYLE)
 
@@ -604,7 +610,16 @@ class Overlay(QWidget):
 
         self.refresh_button = ClickableLabel("刷新")
         self.refresh_button.setObjectName("refresh")
-        self.refresh_button.setToolTip("手动刷新（F5 / 全局 Alt+N）")
+        refresh_window = self._shortcuts.get("refresh_window")
+        refresh_global = self._shortcuts.get("refresh_global")
+        self.refresh_button.setToolTip(
+            "手动刷新"
+            + (
+                f"（{refresh_window.text} / 全局 {refresh_global.text}）"
+                if refresh_window and refresh_global
+                else ""
+            )
+        )
         self.refresh_button.clicked.connect(self._manual_refresh)
 
         # 用的不是正式库时给个显眼标记，避免忘了自己在沙盒里
@@ -705,20 +720,17 @@ class Overlay(QWidget):
         self._hint_token = 0
         self._log_stamp: tuple[int, int] | None = None
 
-        self.shortcut = QShortcut(QKeySequence("F5"), self)
-        self.shortcut.activated.connect(self._manual_refresh)
-        self.global_refresh_shortcut = QShortcut(QKeySequence("Alt+N"), self)
-        self.global_refresh_shortcut.activated.connect(self._manual_refresh)
-        self.force_save_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
-        self.force_save_shortcut.activated.connect(self._force_save)
-        self.sync_shortcut = QShortcut(QKeySequence("Ctrl+F5"), self)
-        self.sync_shortcut.activated.connect(self.sync_now)
+        self._install_window_shortcuts()
 
-        poll_seconds = int(load_config().get("poll_seconds") or POLL_MS // 1000)
+        poll_seconds = int(self._config.get("poll_seconds") or POLL_MS // 1000)
         self._timer = QTimer(self)
         self._timer.setInterval(max(5, poll_seconds) * 1000)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
+
+        if self._shortcut_warnings:
+            logger.warning("快捷键配置: %s", "；".join(self._shortcut_warnings))
+            self._set_hint("；".join(self._shortcut_warnings), error=True, auto_hide_ms=8000)
 
         # 启动 1.5 秒后后台检查一次更新，不阻塞界面
         QTimer.singleShot(1500, self.check_updates)
@@ -1503,23 +1515,63 @@ class Overlay(QWidget):
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
         )
 
+    def _install_window_shortcuts(self) -> None:
+        callbacks = {
+            "refresh_window": self._manual_refresh,
+            "force_save": self._force_save,
+            "sync": self.sync_now,
+        }
+        for action, callback in callbacks.items():
+            spec = self._shortcuts.get(action)
+            if spec is None:
+                continue
+            shortcut = QShortcut(spec.sequence, self)
+            shortcut.activated.connect(callback)
+            self._window_shortcuts[action] = shortcut
+
     def _install_hotkey(self) -> None:
         if _user32 is None or not self._hwnd or self._hotkey_filter is not None:
             return
         callbacks: dict[int, object] = {}
         failed: list[str] = []
-        if _user32.RegisterHotKey(
-            self._hwnd, HOTKEY_ID_TOGGLE, MOD_ALT | MOD_NOREPEAT, ord("M")
-        ):
-            callbacks[HOTKEY_ID_TOGGLE] = self.toggle_interactive
-        else:
-            failed.append("Alt+M")
-        if _user32.RegisterHotKey(
-            self._hwnd, HOTKEY_ID_REFRESH, MOD_ALT | MOD_NOREPEAT, ord("N")
-        ):
-            callbacks[HOTKEY_ID_REFRESH] = self._refresh_from_hotkey
-        else:
-            failed.append("Alt+N")
+        actions = {
+            "toggle_interactive": self.toggle_interactive,
+            "refresh_global": self._refresh_from_hotkey,
+        }
+
+        for index, action in enumerate(GLOBAL_ACTIONS):
+            spec = self._shortcuts.get(action)
+            if spec is None:
+                continue
+            hotkey_id = HOTKEY_BASE_ID + index
+            chosen = spec
+            modifiers, vk = -1, -1
+            try:
+                modifiers, vk = to_win32_hotkey(spec.sequence)
+            except ValueError as exc:
+                logger.warning("%s 的全局热键不可用: %s", spec.text, exc)
+
+            if modifiers < 0 or not _user32.RegisterHotKey(
+                self._hwnd, hotkey_id, modifiers, vk
+            ):
+                fallback = default_shortcut(action)
+                if fallback.text != chosen.text:
+                    try:
+                        modifiers, vk = to_win32_hotkey(fallback.sequence)
+                        if _user32.RegisterHotKey(
+                            self._hwnd, hotkey_id, modifiers, vk
+                        ):
+                            chosen = fallback
+                        else:
+                            failed.append(f"{spec.text}（默认 {fallback.text} 也失败）")
+                            continue
+                    except ValueError:
+                        failed.append(f"{spec.text}（默认 {fallback.text} 也失败）")
+                        continue
+                else:
+                    failed.append(spec.text)
+                    continue
+            callbacks[hotkey_id] = actions[action]
 
         if callbacks:
             app = QApplication.instance()
@@ -1544,7 +1596,7 @@ class Overlay(QWidget):
         self._hotkey_filter = None
 
     def _manual_refresh(self) -> None:
-        """按钮、F5、全局 Alt+N 共用的手动刷新，刷新后给一个可见反馈。"""
+        """按钮、窗口刷新快捷键、全局刷新快捷键共用的手动刷新。"""
         self.refresh(force=True)
         self._set_hint("已刷新")
 
@@ -1570,10 +1622,26 @@ class Overlay(QWidget):
                 _user32.SetForegroundWindow(self._hwnd)
             self._apply_cursor(True)
             self._move_cursor_into_window()
+
+            if self._collapsed:
+                self._collapsed = False
+                self.collapse_button.setText("折叠")
+                self.collapse_button.setToolTip("只保留顶栏")
+                self._apply_collapsed()
+
+            if (
+                not self._editing
+                and self._trial is not None
+                and self._seed is not None
+            ):
+                self.begin_edit()
+
             if self._editing:
                 first = next(iter(self._inputs.values()), None)
                 if first is not None:
                     first.setFocus()
+                elif self._fpi_view is not None:
+                    self._fpi_view.focus_first()
             else:
                 self.setFocus()
             return
