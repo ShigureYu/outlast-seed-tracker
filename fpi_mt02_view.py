@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QPoint, QRegularExpression, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette, QRegularExpressionValidator
+from PyQt6.QtGui import QColor, QCursor, QPalette, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -225,6 +225,14 @@ class PatternPicker(QWidget):
 
     def open_popup(self) -> None:
         self._show_popup()
+        if self.list.count() == 0:
+            return
+        first = self.list.item(0)
+        self.list.scrollToItem(first)
+        point = self.list.viewport().mapToGlobal(
+            self.list.visualItemRect(first).center()
+        )
+        QCursor.setPos(point)
 
     def _choose_target(self, item: QListWidgetItem) -> None:
         target = item.data(Qt.ItemDataRole.UserRole)
