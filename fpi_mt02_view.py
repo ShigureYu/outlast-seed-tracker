@@ -223,6 +223,9 @@ class PatternPicker(QWidget):
         self.popup.show()
         self.list.setFocus()
 
+    def open_popup(self) -> None:
+        self._show_popup()
+
     def _choose_target(self, item: QListWidgetItem) -> None:
         target = item.data(Qt.ItemDataRole.UserRole)
         if target is None:
@@ -242,6 +245,7 @@ class EntryRow(QWidget):
         self.setObjectName("fpiRow")
 
         self.picker = FloorRoomPicker(info)
+        self.picker.roomChanged.connect(self._on_room_changed)
         self.pattern = PatternPicker(info)
 
         self.number = QLineEdit()
@@ -269,7 +273,7 @@ class EntryRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        layout.addWidget(self.picker, 5)
+        layout.addWidget(self.picker, 4)
         layout.addWidget(self.pattern, 3)
         layout.addWidget(self.number, 2)
 
@@ -281,6 +285,11 @@ class EntryRow(QWidget):
             self.number,
         ):
             widget.installEventFilter(self)
+
+    def _on_room_changed(self, _room: Room) -> None:
+        # 先把房间/图案都录完，数字按实际查找顺序逐个补，不自动跳数字。
+        if not self._readonly:
+            self.pattern.open_popup()
 
     def set_entry(self, entry: Entry | None) -> None:
         self.picker.set_room(entry.room if entry else None)
@@ -357,7 +366,7 @@ class FPI_MT02View(QWidget):
             header_layout = QHBoxLayout(header)
             header_layout.setContentsMargins(0, 0, 0, 0)
             header_layout.setSpacing(6)
-            for stretch, text in zip((5, 3, 2), self.HEADERS):
+            for stretch, text in zip((4, 3, 2), self.HEADERS):
                 label = QLabel(text)
                 label.setObjectName("slot")
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)

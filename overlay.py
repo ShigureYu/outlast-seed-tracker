@@ -267,8 +267,12 @@ QPushButton#fpiPicker, QPushButton#fpiPattern, QComboBox#fpiPattern {
     min-height: 24px;
     outline: none;
 }
-QPushButton#fpiPicker, QPushButton#fpiPattern {
+QPushButton#fpiPicker {
     text-align: left;
+    padding: 4px 10px;
+}
+QPushButton#fpiPattern {
+    text-align: center;
     padding: 4px 10px;
 }
 QComboBox#fpiPattern {
