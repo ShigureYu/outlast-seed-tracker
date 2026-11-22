@@ -221,6 +221,149 @@ QPushButton#refresh {
     background: rgba(255, 255, 255, 28);
 }
 
+QTabWidget#fpiTabs {
+    background: transparent;
+    outline: none;
+}
+QTabWidget#fpiTabs:focus {
+    outline: none;
+}
+QTabBar {
+    outline: none;
+}
+QTabWidget#fpiTabs::pane {
+    background: transparent;
+    border: none;
+}
+QWidget#fpiTabPage {
+    background: transparent;
+}
+QTabBar::tab {
+    background: rgba(255, 255, 255, 22);
+    color: #cdd1da;
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-bottom: none;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    padding: 4px 16px;
+    margin-right: 2px;
+    font-size: 14px;
+}
+QTabBar::tab:selected {
+    background: rgba(255, 255, 255, 52);
+    color: #ffffff;
+}
+QTabBar::tab:hover {
+    background: rgba(255, 255, 255, 38);
+}
+QPushButton#fpiPicker, QPushButton#fpiPattern, QComboBox#fpiPattern {
+    background: rgba(255, 255, 255, 26);
+    border: 1px solid rgba(255, 255, 255, 46);
+    border-radius: 5px;
+    color: #ffffff;
+    min-height: 24px;
+    outline: none;
+}
+QPushButton#fpiPicker, QPushButton#fpiPattern {
+    text-align: left;
+    padding: 4px 10px;
+}
+QComboBox#fpiPattern {
+    padding: 4px 24px 4px 10px;
+}
+QComboBox#fpiPattern::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border: none;
+    background: transparent;
+}
+QPushButton#fpiPicker:focus, QPushButton#fpiPattern:focus, QComboBox#fpiPattern:focus {
+    border: 1px solid rgba(255, 255, 255, 80);
+    outline: none;
+}
+QPushButton#fpiPicker:disabled, QPushButton#fpiPattern:disabled, QComboBox#fpiPattern:disabled {
+    background: rgba(255, 255, 255, 14);
+    border: 1px solid rgba(255, 255, 255, 24);
+    color: #d8dbe2;
+}
+QComboBox#fpiPattern QAbstractItemView {
+    background: #20232a;
+    color: #e9e9ec;
+    selection-background-color: #4a6a8a;
+    selection-color: #ffffff;
+}
+QLineEdit#fpiNumber {
+    padding: 4px 8px;
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    color: #ffffff;
+    outline: none;
+}
+QLineEdit#fpiNumber:focus {
+    border: 1px solid rgba(255, 255, 255, 80);
+    outline: none;
+}
+QLineEdit#fpiNumber:disabled {
+    background: transparent;
+    border: none;
+    color: #7ebf96;
+}
+QFrame#fpiPopup, QFrame#fpiPatternPopup {
+    background-color: #1d2026;
+    border: 1px solid rgba(255, 255, 255, 55);
+    border-radius: 6px;
+}
+QListWidget#fpiFloorList, QListWidget#fpiRoomList, QListWidget#fpiPatternList {
+    background-color: #1d2026;
+    border: none;
+    color: #e9e9ec;
+    outline: none;
+}
+QListWidget#fpiFloorList QWidget, QListWidget#fpiRoomList QWidget,
+QListWidget#fpiPatternList QWidget {
+    background-color: #1d2026;
+}
+QListWidget#fpiFloorList QScrollBar:vertical,
+QListWidget#fpiRoomList QScrollBar:vertical,
+QListWidget#fpiPatternList QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QListWidget#fpiFloorList QScrollBar::handle:vertical,
+QListWidget#fpiRoomList QScrollBar::handle:vertical,
+QListWidget#fpiPatternList QScrollBar::handle:vertical {
+    background: rgba(255, 255, 255, 80);
+    border-radius: 4px;
+    min-height: 20px;
+}
+QListWidget#fpiFloorList QScrollBar::add-line:vertical,
+QListWidget#fpiRoomList QScrollBar::add-line:vertical,
+QListWidget#fpiPatternList QScrollBar::add-line:vertical,
+QListWidget#fpiFloorList QScrollBar::sub-line:vertical,
+QListWidget#fpiRoomList QScrollBar::sub-line:vertical,
+QListWidget#fpiPatternList QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QListWidget#fpiFloorList::item, QListWidget#fpiRoomList::item,
+QListWidget#fpiPatternList::item {
+    padding: 5px 8px;
+    border-radius: 4px;
+}
+QListWidget#fpiFloorList::item:selected,
+QListWidget#fpiRoomList::item:selected,
+QListWidget#fpiPatternList::item:selected {
+    background: rgba(120, 170, 220, 90);
+    color: #ffffff;
+}
+QListWidget#fpiFloorList::item:hover,
+QListWidget#fpiRoomList::item:hover,
+QListWidget#fpiPatternList::item:hover {
+    background: rgba(255, 255, 255, 28);
+}
+
 QLabel#close {
     font-size: 17px;
     color: rgba(255, 255, 255, 150);
@@ -525,6 +668,16 @@ class Overlay(QWidget):
         self.footer = QWidget(self)
         self.footer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.footer.setLayout(footer)
+        # 只读/编辑切换时保存按钮会显隐；固定 footer 高度，避免折叠按钮上下跳。
+        footer_margins = footer.contentsMargins()
+        self.footer.setFixedHeight(
+            max(
+                self.collapse_button.sizeHint().height(),
+                self.save_button.sizeHint().height(),
+            )
+            + footer_margins.top()
+            + footer_margins.bottom()
+        )
         root.addWidget(self.footer)
 
         # ---- 数据同步提示（默认隐藏，不占高度）----
@@ -918,6 +1071,10 @@ class Overlay(QWidget):
             self.save()
 
     def _refit_width(self) -> None:
+        # FPI_MT02 编辑时按钮文字会变长（房间名），但不应因此把窗口撑宽；
+        # 宽度在只读刷新时已经确定，编辑期间保持稳定。
+        if self._editing and self._trial == fpi_mt02.TRIAL_ID:
+            return
         layout = self.layout()
         if layout is None:
             return
@@ -1178,6 +1335,7 @@ class Overlay(QWidget):
             if self._fpi_view is None:
                 return
             self._set_editing(True, focus=True)
+            self._fit()
             return
         info = describe_trial(self._trial) if self._trial else None
         if info is None or not info["slots"]:
@@ -1264,6 +1422,10 @@ class Overlay(QWidget):
         """
         super().changeEvent(event)
         if event.type() == QEvent.Type.ActivationChange:
+            # 图案下拉/房间弹层也是独立 popup，打开时会让主窗短暂失活；
+            # 这时不要整棵控件树重设光标，否则 footer 会跟着重绘闪一下。
+            if QApplication.activePopupWidget() is not None:
+                return
             self._apply_cursor(self._interactive)
             if self._interactive and not self.isActiveWindow():
                 # 等激活变化落定后再判断，避免被图案弹窗/模态框误触发

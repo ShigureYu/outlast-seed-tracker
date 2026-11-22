@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QPoint, QRegularExpression, Qt, pyqtSignal
-from PyQt6.QtGui import QRegularExpressionValidator
+from PyQt6.QtGui import QColor, QPalette, QRegularExpressionValidator
 from PyQt6.QtWidgets import (
-    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -37,6 +36,10 @@ class FloorRoomPicker(QWidget):
 
         self.button = QPushButton("选择房间")
         self.button.setObjectName("fpiPicker")
+        self.button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.button.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
         self.button.clicked.connect(self._show_popup)
 
         layout = QHBoxLayout(self)
@@ -46,13 +49,17 @@ class FloorRoomPicker(QWidget):
         self.popup = QFrame(self, Qt.WindowType.Popup)
         self.popup.setObjectName("fpiPopup")
         self.popup.setFrameShape(QFrame.Shape.StyledPanel)
+        self.popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         popup_layout = QHBoxLayout(self.popup)
         popup_layout.setContentsMargins(6, 6, 6, 6)
         popup_layout.setSpacing(6)
 
         self.floor_list = QListWidget()
         self.floor_list.setObjectName("fpiFloorList")
-        self.floor_list.setFixedWidth(120)
+        floor_metrics = self.floor_list.fontMetrics()
+        self.floor_list.setFixedWidth(
+            max(floor_metrics.horizontalAdvance(floor.cn) for floor in info.floors) + 34
+        )
         for floor in info.floors:
             item = QListWidgetItem(floor.cn)
             item.setData(Qt.ItemDataRole.UserRole, floor)
@@ -61,7 +68,10 @@ class FloorRoomPicker(QWidget):
 
         self.room_list = QListWidget()
         self.room_list.setObjectName("fpiRoomList")
-        self.room_list.setFixedWidth(170)
+        room_metrics = self.room_list.fontMetrics()
+        self.room_list.setFixedWidth(
+            max(room_metrics.horizontalAdvance(room.cn) for room in info.rooms) + 40
+        )
         self.room_list.itemClicked.connect(self._choose_room)
         self.room_list.itemDoubleClicked.connect(self._choose_room)
 
@@ -136,6 +146,92 @@ class FloorRoomPicker(QWidget):
         self.roomChanged.emit(room)
 
 
+class PatternPicker(QWidget):
+    """图案下拉：自绘弹层，避免 QComboBox 原生 popup 造成 footer 闪烁。"""
+
+    targetChanged = pyqtSignal(object)
+
+    def __init__(self, info: TrialInfo, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._info = info
+        self._target: Target | None = None
+        self._readonly = False
+
+        self.button = QPushButton("选择图案")
+        self.button.setObjectName("fpiPattern")
+        self.button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.button.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        self.button.setFixedHeight(30)
+        self.button.clicked.connect(self._show_popup)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.button)
+
+        self.popup = QFrame(self, Qt.WindowType.Popup)
+        self.popup.setObjectName("fpiPatternPopup")
+        self.popup.setFrameShape(QFrame.Shape.StyledPanel)
+        self.popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        popup_layout = QVBoxLayout(self.popup)
+        popup_layout.setContentsMargins(4, 4, 4, 4)
+
+        self.list = QListWidget()
+        self.list.setObjectName("fpiPatternList")
+        self.list.setFixedWidth(140)
+        for target in info.targets:
+            item = QListWidgetItem(target.name)
+            item.setData(Qt.ItemDataRole.UserRole, target)
+            self.list.addItem(item)
+        self.list.itemClicked.connect(self._choose_target)
+        popup_layout.addWidget(self.list)
+        # 弹层跟着列表宽度走，避免滚动条和右侧边框之间出现大片空白
+        self.popup.setFixedWidth(self.list.width() + 10)
+        self.popup.hide()
+
+    def target(self) -> Target | None:
+        return self._target
+
+    def set_target(self, target: Target | None) -> None:
+        self._target = target
+        self.button.setText(target.name if target else "选择图案")
+        if target is not None:
+            for row in range(self.list.count()):
+                item = self.list.item(row)
+                candidate = item.data(Qt.ItemDataRole.UserRole)
+                if candidate.name == target.name:
+                    self.list.setCurrentRow(row)
+                    break
+
+    def set_readonly(self, readonly: bool) -> None:
+        self._readonly = readonly
+        self.button.setEnabled(not readonly)
+        self.button.setText(
+            (self._target.name if self._target else "选择图案") if not readonly
+            else (self._target.name if self._target else "—")
+        )
+        if readonly:
+            self.popup.hide()
+
+    def _show_popup(self) -> None:
+        if self._readonly:
+            return
+        self.popup.adjustSize()
+        pos = self.button.mapToGlobal(QPoint(0, self.button.height()))
+        self.popup.move(pos)
+        self.popup.show()
+        self.list.setFocus()
+
+    def _choose_target(self, item: QListWidgetItem) -> None:
+        target = item.data(Qt.ItemDataRole.UserRole)
+        if target is None:
+            return
+        self.set_target(target)
+        self.popup.hide()
+        self.targetChanged.emit(target)
+
+
 class EntryRow(QWidget):
     editRequested = pyqtSignal()
 
@@ -146,45 +242,54 @@ class EntryRow(QWidget):
         self.setObjectName("fpiRow")
 
         self.picker = FloorRoomPicker(info)
-        self.pattern = QComboBox()
-        self.pattern.setObjectName("fpiPattern")
-        self.pattern.addItem("选择图案", None)
-        for target in info.targets:
-            self.pattern.addItem(target.name, target)
+        self.pattern = PatternPicker(info)
 
         self.number = QLineEdit()
         self.number.setObjectName("fpiNumber")
         self.number.setPlaceholderText("1-9")
         self.number.setMaxLength(1)
+        self.number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_palette = self.number.palette()
+        placeholder_color = QColor("#8b909a")
+        placeholder_palette.setColor(
+            QPalette.ColorRole.PlaceholderText, placeholder_color
+        )
+        placeholder_palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.PlaceholderText,
+            placeholder_color,
+        )
+        self.number.setPalette(placeholder_palette)
         self.number.setValidator(
             QRegularExpressionValidator(QRegularExpression("[1-9]"), self.number)
         )
+        for widget in (self.picker.button, self.pattern.button, self.number):
+            widget.setFixedHeight(30)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        layout.addWidget(self.picker, 2)
-        layout.addWidget(self.pattern, 1)
-        layout.addWidget(self.number, 1)
+        layout.addWidget(self.picker, 5)
+        layout.addWidget(self.pattern, 3)
+        layout.addWidget(self.number, 2)
 
-        for widget in (self.picker, self.picker.button, self.pattern, self.number):
+        for widget in (
+            self.picker,
+            self.picker.button,
+            self.pattern,
+            self.pattern.button,
+            self.number,
+        ):
             widget.installEventFilter(self)
 
     def set_entry(self, entry: Entry | None) -> None:
         self.picker.set_room(entry.room if entry else None)
-        index = 0
-        if entry is not None:
-            for i in range(self.pattern.count()):
-                target = self.pattern.itemData(i)
-                if target is not None and target.name == entry.target.name:
-                    index = i
-                    break
-        self.pattern.setCurrentIndex(index)
+        self.pattern.set_target(entry.target if entry else None)
         self.number.setText(entry.number if entry else "")
 
     def entry(self) -> Entry | None:
         room = self.picker.room()
-        target = self.pattern.currentData()
+        target = self.pattern.target()
         number = self.number.text().strip()
         filled = [room is not None, target is not None, bool(number)]
         if not any(filled):
@@ -198,9 +303,19 @@ class EntryRow(QWidget):
     def set_readonly(self, readonly: bool) -> None:
         self._readonly = readonly
         self.picker.set_readonly(readonly)
-        self.pattern.setEnabled(not readonly)
+        self.pattern.set_readonly(readonly)
         self.number.setReadOnly(readonly)
         self.number.setEnabled(not readonly)
+        # 空值只读时用灰色占位显示“—”，绿色只表示已有数据。
+        self.number.setPlaceholderText(
+            "—" if readonly and not self.number.text() else ("1-9" if not readonly else "")
+        )
+        if readonly and not self.number.text():
+            self.number.setStyleSheet(
+                "QLineEdit#fpiNumber:disabled { color: #8b909a; }"
+            )
+        else:
+            self.number.setStyleSheet("")
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.Type.MouseButtonDblClick:
@@ -224,18 +339,28 @@ class FPI_MT02View(QWidget):
         self._rows: dict[int, list[EntryRow]] = {}
         self.tabs = QTabWidget()
         self.tabs.setObjectName("fpiTabs")
+        self.tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         for turn in TURNS:
             tab = QWidget()
+            tab.setObjectName("fpiTabPage")
             grid = QGridLayout(tab)
-            grid.setContentsMargins(0, 4, 0, 0)
+            grid.setContentsMargins(0, 4, 0, 4)
             grid.setHorizontalSpacing(6)
             grid.setVerticalSpacing(4)
-            for column, text in enumerate(self.HEADERS):
+            grid.setColumnStretch(0, 1)
+
+            header = QWidget()
+            header_layout = QHBoxLayout(header)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(6)
+            for stretch, text in zip((5, 3, 2), self.HEADERS):
                 label = QLabel(text)
                 label.setObjectName("slot")
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                grid.addWidget(label, 0, column)
+                header_layout.addWidget(label, stretch)
+            grid.addWidget(header, 0, 0, 1, 3)
+
             rows: list[EntryRow] = []
             for row_index in range(4):
                 row = EntryRow(info)
@@ -275,5 +400,5 @@ class FPI_MT02View(QWidget):
                 row.set_readonly(readonly)
 
     def focus_first(self) -> None:
-        first_row = self._rows[TURNS[0]][0]
-        first_row.picker.button.setFocus()
+        # FPI_MT02 不自动聚焦数字框，避免空值时光标一直闪烁。
+        return
